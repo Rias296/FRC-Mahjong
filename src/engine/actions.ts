@@ -208,7 +208,15 @@ export function canConcealedKong(hand: PlayerHand): TileKind[] {
   return result;
 }
 
-function proximity(seat: Seat, discarderSeat: Seat): number {
+/**
+ * Turn-order distance of `seat` from `discarderSeat`, going E->S->W->N
+ * (0 = discarderSeat itself, 1..3 = seats reached in turn order thereafter).
+ * This is the single shared turn-order-distance rule used both by
+ * resolveClaims's proximity tie-break (RULES.md §6.1) and by findRobbers's
+ * multiple-robber tie-break (RULES.md §7.2 step 3, in ./rob-kong.ts). Must
+ * never be duplicated elsewhere — always import this function.
+ */
+export function proximity(seat: Seat, discarderSeat: Seat): number {
   return (seat - discarderSeat + 4) % 4;
 }
 

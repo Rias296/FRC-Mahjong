@@ -1,0 +1,345 @@
+import { describe, expect, it } from 'vitest';
+import {
+  computeDealerTai,
+  computeHandTai,
+  computePaymentLegs,
+  meetsMinimumTai,
+  TAI_EVALUATORS,
+  TAI_SLOT_IDS,
+  type ScoringContext,
+  type TaiSlotId,
+  type WinType,
+} from './scoring';
+import { DEFAULT_RULES, type RulesConfig } from './rules-config';
+import type { Seat } from './seats';
+
+const WIN_TYPES: readonly WinType[] = ['self-draw', 'discard', 'robbed-kong'];
+
+describe('TAI_SLOT_IDS / TAI_EVALUATORS', () => {
+  it('contains exactly the 19 §12 slot ids in table order and excludes "dealer"', () => {
+    const expected: TaiSlotId[] = [
+      'pingHu',
+      'selfDraw',
+      'concealedHand',
+      'allPungs',
+      'halfFlush',
+      'fullFlush',
+      'allHonors',
+      'flowers',
+      'robKong',
+      'kongReplacementWin',
+      'lastTileDraw',
+      'heavenlyHand',
+      'earthlyHand',
+      'littleThreeDragons',
+      'bigThreeDragons',
+      'littleFourWinds',
+      'bigFourWinds',
+      'singleWait',
+      'concealedTriplets',
+    ];
+    expect(TAI_SLOT_IDS).toEqual(expected);
+    expect(TAI_SLOT_IDS.length).toBe(19);
+    expect(TAI_SLOT_IDS).not.toContain('dealer');
+  });
+
+  it('every slot except selfDraw and robKong evaluates to 0 for all three winTypes', () => {
+    for (const id of TAI_SLOT_IDS) {
+      if (id === 'selfDraw' || id === 'robKong') continue;
+      for (const winType of WIN_TYPES) {
+        const context: ScoringContext = { winType };
+        expect(TAI_EVALUATORS[id](context, DEFAULT_RULES)).toBe(0);
+      }
+    }
+  });
+
+  it('selfDraw evaluator returns selfDrawTai only when winType is "self-draw"', () => {
+    for (const winType of WIN_TYPES) {
+      const context: ScoringContext = { winType };
+      const expected = winType === 'self-draw' ? DEFAULT_RULES.selfDrawTai : 0;
+      expect(TAI_EVALUATORS.selfDraw(context, DEFAULT_RULES)).toBe(expected);
+    }
+  });
+
+  it('robKong evaluator returns robKongTai only when winType is "robbed-kong"', () => {
+    for (const winType of WIN_TYPES) {
+      const context: ScoringContext = { winType };
+      const expected = winType === 'robbed-kong' ? DEFAULT_RULES.robKongTai : 0;
+      expect(TAI_EVALUATORS.robKong(context, DEFAULT_RULES)).toBe(expected);
+    }
+  });
+});
+
+describe('computeHandTai', () => {
+  it('returns selfDrawTai for a self-drawn win under default rules (= 1)', () => {
+    expect(computeHandTai({ winType: 'self-draw' }, DEFAULT_RULES)).toBe(1);
+  });
+
+  it('returns robKongTai for a robbed-kong win under default rules (= 1)', () => {
+    expect(computeHandTai({ winType: 'robbed-kong' }, DEFAULT_RULES)).toBe(1);
+  });
+
+  it('returns 0 for a win off a discard', () => {
+    expect(computeHandTai({ winType: 'discard' }, DEFAULT_RULES)).toBe(0);
+  });
+
+  it('sums using custom selfDrawTai and robKongTai config values', () => {
+    const rules: RulesConfig = { ...DEFAULT_RULES, selfDrawTai: 4, robKongTai: 7 };
+    expect(computeHandTai({ winType: 'self-draw' }, rules)).toBe(4);
+    expect(computeHandTai({ winType: 'robbed-kong' }, rules)).toBe(7);
+  });
+});
+
+describe('computeDealerTai', () => {
+  it('returns dealerBaseTai when repeatCount is 0 (= 1 default)', () => {
+    expect(computeDealerTai(0, DEFAULT_RULES)).toBe(1);
+  });
+
+  it('computes exact escalation for repeatCount 1, 2, and 5 under default rules (3, 5, 11)', () => {
+    expect(computeDealerTai(1, DEFAULT_RULES)).toBe(3);
+    expect(computeDealerTai(2, DEFAULT_RULES)).toBe(5);
+    expect(computeDealerTai(5, DEFAULT_RULES)).toBe(11);
+  });
+
+  it('computes escalation with custom dealerBaseTai and dealerRepeatBonusTaiPerRepeat', () => {
+    const rules: RulesConfig = { ...DEFAULT_RULES, dealerBaseTai: 2, dealerRepeatBonusTaiPerRepeat: 3 };
+    expect(computeDealerTai(0, rules)).toBe(2);
+    expect(computeDealerTai(1, rules)).toBe(5);
+    expect(computeDealerTai(4, rules)).toBe(14);
+  });
+
+  it('throws on negative repeatCount', () => {
+    expect(() => computeDealerTai(-1, DEFAULT_RULES)).toThrow();
+  });
+
+  it('throws on non-integer repeatCount (fraction and NaN)', () => {
+    expect(() => computeDealerTai(1.5, DEFAULT_RULES)).toThrow();
+    expect(() => computeDealerTai(NaN, DEFAULT_RULES)).toThrow();
+  });
+});
+
+describe('meetsMinimumTai', () => {
+  it('returns true when handTai equals minTaiToWin', () => {
+    const rules: RulesConfig = { ...DEFAULT_RULES, minTaiToWin: 3 };
+    expect(meetsMinimumTai(3, rules)).toBe(true);
+  });
+
+  it('returns false when handTai is one below minTaiToWin', () => {
+    const rules: RulesConfig = { ...DEFAULT_RULES, minTaiToWin: 3 };
+    expect(meetsMinimumTai(2, rules)).toBe(false);
+  });
+
+  it('returns true when handTai is one above minTaiToWin', () => {
+    const rules: RulesConfig = { ...DEFAULT_RULES, minTaiToWin: 3 };
+    expect(meetsMinimumTai(4, rules)).toBe(true);
+  });
+
+  it('returns true for zero handTai when minTaiToWin is 0', () => {
+    expect(meetsMinimumTai(0, DEFAULT_RULES)).toBe(true);
+  });
+});
+
+describe('computePaymentLegs — discard shape', () => {
+  it('discard win with dealer uninvolved produces one leg of basePoints + handTai * pointsPerTai', () => {
+    // Dealer is seat 0; winner seat 1, payer seat 2 — neither is the dealer.
+    const legs = computePaymentLegs({
+      winnerSeat: 1,
+      winType: 'discard',
+      payerSeats: [2],
+      handTai: 4,
+      dealerSeat: 0,
+      repeatCount: 0,
+      rules: DEFAULT_RULES,
+    });
+    expect(legs).toEqual([{ payerSeat: 2, payeeSeat: 1, amount: DEFAULT_RULES.basePoints + 4 * DEFAULT_RULES.pointsPerTai }]);
+  });
+
+  it('discard win where the winner is the dealer adds dealer tai to the single leg', () => {
+    const dealerTai = computeDealerTai(0, DEFAULT_RULES);
+    const legs = computePaymentLegs({
+      winnerSeat: 0,
+      winType: 'discard',
+      payerSeats: [2],
+      handTai: 4,
+      dealerSeat: 0,
+      repeatCount: 0,
+      rules: DEFAULT_RULES,
+    });
+    const expectedAmount = DEFAULT_RULES.basePoints + (4 + dealerTai) * DEFAULT_RULES.pointsPerTai;
+    expect(legs).toEqual([{ payerSeat: 2, payeeSeat: 0, amount: expectedAmount }]);
+  });
+
+  it('discard win where the payer is the dealer adds dealer tai to the single leg', () => {
+    const dealerTai = computeDealerTai(0, DEFAULT_RULES);
+    const legs = computePaymentLegs({
+      winnerSeat: 1,
+      winType: 'discard',
+      payerSeats: [0],
+      handTai: 4,
+      dealerSeat: 0,
+      repeatCount: 0,
+      rules: DEFAULT_RULES,
+    });
+    const expectedAmount = DEFAULT_RULES.basePoints + (4 + dealerTai) * DEFAULT_RULES.pointsPerTai;
+    expect(legs).toEqual([{ payerSeat: 0, payeeSeat: 1, amount: expectedAmount }]);
+  });
+
+  it('discard win reflects repeatCount escalation in the dealer-involved leg (repeatCount 2 -> +5 with defaults)', () => {
+    const dealerTai = computeDealerTai(2, DEFAULT_RULES);
+    expect(dealerTai).toBe(5);
+    const legs = computePaymentLegs({
+      winnerSeat: 0,
+      winType: 'discard',
+      payerSeats: [2],
+      handTai: 1,
+      dealerSeat: 0,
+      repeatCount: 2,
+      rules: DEFAULT_RULES,
+    });
+    const expectedAmount = DEFAULT_RULES.basePoints + (1 + 5) * DEFAULT_RULES.pointsPerTai;
+    expect(legs[0].amount).toBe(expectedAmount);
+  });
+});
+
+describe('computePaymentLegs — self-draw shape', () => {
+  it('self-drawn win by the dealer adds dealer tai to all three legs', () => {
+    const dealerTai = computeDealerTai(0, DEFAULT_RULES);
+    const legs = computePaymentLegs({
+      winnerSeat: 0,
+      winType: 'self-draw',
+      payerSeats: [1, 2, 3],
+      handTai: 2,
+      dealerSeat: 0,
+      repeatCount: 0,
+      rules: DEFAULT_RULES,
+    });
+    const expectedAmount = DEFAULT_RULES.basePoints + (2 + dealerTai) * DEFAULT_RULES.pointsPerTai;
+    for (const leg of legs) {
+      expect(leg.amount).toBe(expectedAmount);
+      expect(leg.payeeSeat).toBe(0);
+    }
+  });
+
+  it('self-drawn win by a non-dealer adds dealer tai only to the dealer\'s payer leg', () => {
+    const dealerTai = computeDealerTai(0, DEFAULT_RULES);
+    const legs = computePaymentLegs({
+      winnerSeat: 1,
+      winType: 'self-draw',
+      payerSeats: [0, 2, 3],
+      handTai: 2,
+      dealerSeat: 0,
+      repeatCount: 0,
+      rules: DEFAULT_RULES,
+    });
+    const dealerLeg = legs.find((l) => l.payerSeat === 0);
+    const otherLegs = legs.filter((l) => l.payerSeat !== 0);
+
+    expect(dealerLeg?.amount).toBe(DEFAULT_RULES.basePoints + (2 + dealerTai) * DEFAULT_RULES.pointsPerTai);
+    expect(otherLegs).toHaveLength(2);
+    for (const leg of otherLegs) {
+      expect(leg.amount).toBe(DEFAULT_RULES.basePoints + 2 * DEFAULT_RULES.pointsPerTai);
+    }
+  });
+
+  it('self-drawn legs preserve payerSeats order and all name the winner as payeeSeat', () => {
+    const payerSeats: readonly Seat[] = [3, 1, 2];
+    const legs = computePaymentLegs({
+      winnerSeat: 0,
+      winType: 'self-draw',
+      payerSeats,
+      handTai: 1,
+      dealerSeat: 0,
+      repeatCount: 0,
+      rules: DEFAULT_RULES,
+    });
+    expect(legs.map((l) => l.payerSeat)).toEqual([3, 1, 2]);
+    expect(legs.every((l) => l.payeeSeat === 0)).toBe(true);
+  });
+});
+
+describe('computePaymentLegs — validation', () => {
+  it('throws when winType is "discard" and payerSeats length is not 1', () => {
+    expect(() =>
+      computePaymentLegs({
+        winnerSeat: 0,
+        winType: 'discard',
+        payerSeats: [1, 2],
+        handTai: 1,
+        dealerSeat: 0,
+        repeatCount: 0,
+        rules: DEFAULT_RULES,
+      }),
+    ).toThrow();
+  });
+
+  it('throws when winType is "self-draw" and payerSeats length is not 3', () => {
+    expect(() =>
+      computePaymentLegs({
+        winnerSeat: 0,
+        winType: 'self-draw',
+        payerSeats: [1, 2],
+        handTai: 1,
+        dealerSeat: 0,
+        repeatCount: 0,
+        rules: DEFAULT_RULES,
+      }),
+    ).toThrow();
+  });
+
+  it('throws when winnerSeat appears in payerSeats', () => {
+    expect(() =>
+      computePaymentLegs({
+        winnerSeat: 1,
+        winType: 'discard',
+        payerSeats: [1],
+        handTai: 1,
+        dealerSeat: 0,
+        repeatCount: 0,
+        rules: DEFAULT_RULES,
+      }),
+    ).toThrow();
+  });
+
+  it('throws when payerSeats contains duplicate seats', () => {
+    expect(() =>
+      computePaymentLegs({
+        winnerSeat: 0,
+        winType: 'self-draw',
+        payerSeats: [1, 1, 2],
+        handTai: 1,
+        dealerSeat: 0,
+        repeatCount: 0,
+        rules: DEFAULT_RULES,
+      }),
+    ).toThrow();
+  });
+
+  it('throws on invalid repeatCount even when the dealer is in no leg', () => {
+    expect(() =>
+      computePaymentLegs({
+        winnerSeat: 1,
+        winType: 'discard',
+        payerSeats: [2],
+        handTai: 1,
+        dealerSeat: 3,
+        repeatCount: -1,
+        rules: DEFAULT_RULES,
+      }),
+    ).toThrow();
+  });
+
+  it('does not mutate the payerSeats input array', () => {
+    const payerSeats: readonly Seat[] = [1, 2, 3];
+    const original = [...payerSeats];
+    computePaymentLegs({
+      winnerSeat: 0,
+      winType: 'self-draw',
+      payerSeats,
+      handTai: 1,
+      dealerSeat: 0,
+      repeatCount: 0,
+      rules: DEFAULT_RULES,
+    });
+    expect(payerSeats).toEqual(original);
+  });
+});
