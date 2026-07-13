@@ -7,11 +7,9 @@
  * ./wall, ./shuffle, ./deal, ./hand, ./actions, ./flowers, ./rob-kong (types
  * only), ./scoring, ./rules-config.
  *
- * Sub-plan A scope: full type surface (including kong/rob-kong types used by
- * a later sub-plan), but only the no-own-turn-kong game flow is implemented.
- * The three own-turn kong actions (declare-added-kong, declare-concealed-kong,
- * declare-rob) are stubbed to return a 'not-implemented' RuleError; a later
- * task implements them for real.
+ * Covers the full turn/claim flow plus own-turn kongs and the robbing-the-kong
+ * window (declare-added-kong, declare-concealed-kong, declare-rob), per
+ * docs/RULES.md §6.2-6.3 and §7.
  *
  * Style, matching the rest of src/engine/*: RuleError is returned (never
  * thrown) for any rejected client action; a bare `throw new Error(...)` is
@@ -28,7 +26,9 @@ import { createTileSet } from './tiles';
 import { deal } from './deal';
 import { canWin } from './hand';
 import {
+  canAddedKong,
   canChow,
+  canConcealedKong,
   canKongFromDiscard,
   canPung,
   resolveClaims,
@@ -37,7 +37,7 @@ import {
   type PlayerMeld,
 } from './actions';
 import { replaceOneFlower, resolveFlowerChain, resolveInitialDeal } from './flowers';
-import type { KongType } from './rob-kong';
+import { findRobbers, promoteAddedKong, revertAddedKong, type KongType } from './rob-kong';
 import {
   computeHandTai,
   computePaymentLegs,
@@ -60,8 +60,7 @@ export type RuleErrorCode =
   | 'barred-by-sacred-discard'
   | 'below-minimum-tai'
   | 'not-a-winning-hand'
-  | 'no-replacement-available'
-  | 'not-implemented'; // Sub-plan A stub marker only; a later task removes this
+  | 'no-replacement-available';
 
 export interface RuleError {
   readonly type: 'rule-error';
@@ -322,11 +321,11 @@ export function applyAction(state: GameState, action: GameAction): GameState | R
     case 'pass':
       return handlePass(state, action);
     case 'declare-added-kong':
-      return handleAddedKongStub(state, action);
+      return handleAddedKong(state, action);
     case 'declare-concealed-kong':
-      return handleConcealedKongStub(state, action);
+      return handleConcealedKong(state, action);
     case 'declare-rob':
-      return handleRobStub(state, action);
+      return handleDeclareRob(state, action);
     default: {
       const exhaustiveCheck: never = action;
       throw new Error(`applyAction: unhandled action type ${JSON.stringify(exhaustiveCheck)}`);
@@ -570,6 +569,10 @@ function handleClaim(state: GameState, action: Extract<GameAction, { type: 'clai
 }
 
 function handlePass(state: GameState, action: Extract<GameAction, { type: 'pass' }>): GameState | RuleError {
+  if (state.phase.type === 'awaiting-rob-kong') {
+    return handleRobKongResponse(state, state.phase, action.seat, 'pass');
+  }
+
   if (state.phase.type !== 'awaiting-claims') {
     return ruleError('wrong-phase', 'pass is only legal in the awaiting-claims phase');
   }
@@ -593,18 +596,20 @@ function handlePass(state: GameState, action: Extract<GameAction, { type: 'pass'
 }
 
 /**
- * Applies sacred-discard bars (RULES.md §8) to every non-discarder seat
- * except `exemptSeat` (the actual claimant, or `null` when no claim
- * executed) who is not already barred, could have won on `discardedTile`,
- * and meets minTaiToWin. No-op entirely when `rules.sacredDiscard.enabled`
- * is false.
+ * Applies sacred-discard bars (RULES.md §8) to every non-discarder seat who
+ * is not already barred, could have won on `discardedTile`, and meets
+ * minTaiToWin. This applies uniformly to every non-discarder seat, INCLUDING
+ * the seat whose non-hu claim (pung/kong/chow) wins the window: winning a
+ * claim other than hu on a tile they could have declared hu on is exactly
+ * the "could have declared hu ... and did not" case §8 bars, regardless of
+ * whether their alternate claim happens to execute. No-op entirely when
+ * `rules.sacredDiscard.enabled` is false.
  */
 function applySacredDiscardBars(
   players: Players,
   nonDiscarderSeats: readonly Seat[],
   discardedTile: Tile,
   rules: RulesConfig,
-  exemptSeat: Seat | null,
 ): Players {
   if (!rules.sacredDiscard.enabled) {
     return players;
@@ -613,7 +618,6 @@ function applySacredDiscardBars(
   let result = players;
   const handTai = computeHandTai({ winType: 'discard' }, rules);
   for (const seat of nonDiscarderSeats) {
-    if (seat === exemptSeat) continue;
     const player = result[seat];
     if (player.barred) continue;
     const couldHaveWon =
@@ -700,13 +704,7 @@ function resolveNonHuClaim(
   // contract guarantees this branch never receives a 'hu' claim).
 ): GameState {
   const nonDiscarderSeats = SEATS.filter((s) => s !== discarderSeat);
-  const barredPlayers = applySacredDiscardBars(
-    state.players,
-    nonDiscarderSeats,
-    discardedTile,
-    state.rules,
-    claim.seat,
-  );
+  const barredPlayers = applySacredDiscardBars(state.players, nonDiscarderSeats, discardedTile, state.rules);
 
   const claimantSeat = claim.seat;
   const claimant = barredPlayers[claimantSeat];
@@ -767,40 +765,12 @@ function resolveNonHuClaim(
   };
   const playersAfterKong = replacePlayer(barredPlayers, claimantSeat, claimantAfterKong);
 
-  const replacement = replaceOneFlower(state.wall, state.rules);
-  const flowers = [...claimantAfterKong.flowers, ...replacement.chainedFlowers];
-
-  if (replacement.tile === null) {
-    const players = replacePlayer(playersAfterKong, claimantSeat, { ...claimantAfterKong, flowers });
-    return {
-      ...state,
-      wall: replacement.wall,
-      players,
-      phase: exhaustiveDrawHandOver(state.dealerSeat, state.repeatCount, state.rules),
-    };
-  }
-
-  const players = replacePlayer(playersAfterKong, claimantSeat, {
-    ...claimantAfterKong,
-    flowers,
-    hand: {
-      ...claimantAfterKong.hand,
-      concealedTiles: [...claimantAfterKong.hand.concealedTiles, replacement.tile],
-    },
-  });
-
-  return {
-    ...state,
-    wall: replacement.wall,
-    players,
-    currentTurnSeat: claimantSeat,
-    phase: { type: 'awaiting-discard', drawnTile: replacement.tile },
-  };
+  return kongReplacementDraw({ ...state, players: playersAfterKong }, claimantSeat);
 }
 
 function resolveNoClaims(state: GameState, discarderSeat: Seat, discardedTile: Tile): GameState {
   const nonDiscarderSeats = SEATS.filter((s) => s !== discarderSeat);
-  const barredPlayers = applySacredDiscardBars(state.players, nonDiscarderSeats, discardedTile, state.rules, null);
+  const barredPlayers = applySacredDiscardBars(state.players, nonDiscarderSeats, discardedTile, state.rules);
 
   const discarder = barredPlayers[discarderSeat];
   const players = replacePlayer(barredPlayers, discarderSeat, {
@@ -824,12 +794,67 @@ function resolveNoClaims(state: GameState, discarderSeat: Seat, discardedTile: T
   };
 }
 
-// --- Sub-plan A stubs: own-turn kong actions --------------------------------
-// No real behavior. A later task removes these stubs and implements the
-// actual kong/rob-kong flow using ./rob-kong's findRobbers/promoteAddedKong/
-// revertAddedKong.
+// --- Own-turn kong actions + rob-the-kong flow (RULES.md §6.2-6.3, §7) -------
 
-function handleAddedKongStub(
+/**
+ * From a set of rob-eligible candidate seats (already proximity-sorted by
+ * findRobbers), keeps only seats that are not currently barred by sacred
+ * discard and whose robbed-kong win would meet minTaiToWin. Preserves the
+ * input order.
+ */
+function filterEligibleRobbers(candidates: readonly Seat[], players: Players, rules: RulesConfig): Seat[] {
+  const robKongHandTai = computeHandTai({ winType: 'robbed-kong' }, rules);
+  const meetsMin = meetsMinimumTai(robKongHandTai, rules);
+  return candidates.filter((seat) => !players[seat].barred && meetsMin);
+}
+
+/**
+ * The shared kong-replacement-draw tail (RULES.md §6.2/§6.3): draws one tile
+ * from the tail (with flower chaining) for `seat`, whose kong is already
+ * committed to `state`. Reserve legality must already have been checked by
+ * the caller before the kong was declared — this never itself rejects.
+ */
+function kongReplacementDraw(state: GameState, seat: Seat): GameState {
+  const player = state.players[seat];
+  const replacement = replaceOneFlower(state.wall, state.rules);
+  const flowers = [...player.flowers, ...replacement.chainedFlowers];
+
+  if (replacement.tile === null) {
+    const players = replacePlayer(state.players, seat, { ...player, flowers });
+    return {
+      ...state,
+      wall: replacement.wall,
+      players,
+      phase: exhaustiveDrawHandOver(state.dealerSeat, state.repeatCount, state.rules),
+    };
+  }
+
+  const players = replacePlayer(state.players, seat, {
+    ...player,
+    flowers,
+    hand: { ...player.hand, concealedTiles: [...player.hand.concealedTiles, replacement.tile] },
+  });
+
+  return {
+    ...state,
+    wall: replacement.wall,
+    players,
+    currentTurnSeat: seat,
+    phase: { type: 'awaiting-discard', drawnTile: replacement.tile },
+  };
+}
+
+function buildOpponentHandsMap(players: Players, declarerSeat: Seat): Partial<Record<Seat, PlayerHand>> {
+  const opponentHands: Partial<Record<Seat, PlayerHand>> = {};
+  for (const seat of SEATS) {
+    if (seat !== declarerSeat) {
+      opponentHands[seat] = players[seat].hand;
+    }
+  }
+  return opponentHands;
+}
+
+function handleAddedKong(
   state: GameState,
   action: Extract<GameAction, { type: 'declare-added-kong' }>,
 ): GameState | RuleError {
@@ -842,10 +867,50 @@ function handleAddedKongStub(
       `Seat ${action.seat} cannot declare a kong; it is seat ${state.currentTurnSeat}'s turn`,
     );
   }
-  return ruleError('not-implemented', 'declare-added-kong is not yet implemented');
+
+  const seat = action.seat;
+  const player = state.players[seat];
+  const theTile = player.hand.concealedTiles.find((t) => t.id === action.tileId);
+  if (theTile === undefined) {
+    return ruleError('tile-not-in-hand', `Tile ${action.tileId} is not in seat ${seat}'s concealed hand`);
+  }
+
+  const eligibleKinds = canAddedKong(player.hand);
+  if (!eligibleKinds.some((k) => kindKey(k) === kindKey(theTile.kind))) {
+    return ruleError('illegal-kong', `Seat ${seat} cannot add-kong tile ${theTile.id}`);
+  }
+
+  if (remaining(state.wall) <= state.rules.deadWallReserve) {
+    return ruleError('no-replacement-available', 'No legal tail replacement draw remains for this kong');
+  }
+
+  const promotedHand = promoteAddedKong(player.hand, theTile);
+  const playersAfterPromotion = replacePlayer(state.players, seat, { ...player, hand: promotedHand });
+  const stateAfterPromotion: GameState = { ...state, players: playersAfterPromotion };
+
+  const opponentHands = buildOpponentHandsMap(playersAfterPromotion, seat);
+  const robbers = findRobbers(theTile, 'added', seat, opponentHands, state.rules);
+  const eligibleRobbers = filterEligibleRobbers(robbers, playersAfterPromotion, state.rules);
+
+  if (eligibleRobbers.length === 0) {
+    return kongReplacementDraw(stateAfterPromotion, seat);
+  }
+
+  return {
+    ...stateAfterPromotion,
+    phase: {
+      type: 'awaiting-rob-kong',
+      declarerSeat: seat,
+      kongTile: theTile,
+      kongType: 'added',
+      pendingConcealedKongTiles: null,
+      eligibleRobbers,
+      responses: {},
+    },
+  };
 }
 
-function handleConcealedKongStub(
+function handleConcealedKong(
   state: GameState,
   action: Extract<GameAction, { type: 'declare-concealed-kong' }>,
 ): GameState | RuleError {
@@ -858,17 +923,194 @@ function handleConcealedKongStub(
       `Seat ${action.seat} cannot declare a kong; it is seat ${state.currentTurnSeat}'s turn`,
     );
   }
-  return ruleError('not-implemented', 'declare-concealed-kong is not yet implemented');
+
+  const seat = action.seat;
+  const player = state.players[seat];
+
+  const eligibleKinds = canConcealedKong(player.hand);
+  if (!eligibleKinds.some((k) => kindKey(k) === kindKey(action.kind))) {
+    return ruleError('illegal-kong', `Seat ${seat} cannot concealed-kong kind ${kindKey(action.kind)}`);
+  }
+
+  if (remaining(state.wall) <= state.rules.deadWallReserve) {
+    return ruleError('no-replacement-available', 'No legal tail replacement draw remains for this kong');
+  }
+
+  const matching = player.hand.concealedTiles.filter((t) => kindKey(t.kind) === kindKey(action.kind));
+  const pendingConcealedKongTiles = matching.slice(0, 4);
+
+  const opponentHands = buildOpponentHandsMap(state.players, seat);
+  const robbers = findRobbers(pendingConcealedKongTiles[0], 'concealed', seat, opponentHands, state.rules);
+  const eligibleRobbers = filterEligibleRobbers(robbers, state.players, state.rules);
+
+  if (eligibleRobbers.length === 0) {
+    const pendingIds = new Set(pendingConcealedKongTiles.map((t) => t.id));
+    const remainingConcealed = player.hand.concealedTiles.filter((t) => !pendingIds.has(t.id));
+    const newMeld: PlayerMeld = { kind: 'kong', concealed: true, tiles: pendingConcealedKongTiles };
+    const updatedPlayer: PlayerState = {
+      ...player,
+      hand: { concealedTiles: remainingConcealed, melds: [...player.hand.melds, newMeld] },
+    };
+    const playersAfterKong = replacePlayer(state.players, seat, updatedPlayer);
+    return kongReplacementDraw({ ...state, players: playersAfterKong }, seat);
+  }
+
+  return {
+    ...state,
+    phase: {
+      type: 'awaiting-rob-kong',
+      declarerSeat: seat,
+      kongTile: pendingConcealedKongTiles[0],
+      kongType: 'concealed',
+      pendingConcealedKongTiles,
+      eligibleRobbers,
+      responses: {},
+    },
+  };
 }
 
-function handleRobStub(
+// --- awaiting-rob-kong: declare-rob / pass + window resolution --------------
+
+function handleRobKongResponse(
+  state: GameState,
+  phase: Extract<Phase, { type: 'awaiting-rob-kong' }>,
+  seat: Seat,
+  response: 'rob' | 'pass',
+): GameState | RuleError {
+  if (!phase.eligibleRobbers.includes(seat)) {
+    return ruleError('wrong-seat', `Seat ${seat} is not eligible to respond to this rob window`);
+  }
+  if (phase.responses[seat] !== undefined) {
+    return ruleError('already-responded', `Seat ${seat} has already responded in this rob window`);
+  }
+
+  const newResponses: Partial<Record<Seat, 'rob' | 'pass'>> = { ...phase.responses, [seat]: response };
+  const stateWithResponse: GameState = { ...state, phase: { ...phase, responses: newResponses } };
+
+  if (Object.keys(newResponses).length < phase.eligibleRobbers.length) {
+    return stateWithResponse;
+  }
+  return resolveRobKongWindow(stateWithResponse, phase, newResponses);
+}
+
+function handleDeclareRob(
   state: GameState,
   action: Extract<GameAction, { type: 'declare-rob' }>,
 ): GameState | RuleError {
-  // Unreachable in Sub-plan A: nothing ever produces an 'awaiting-rob-kong'
-  // phase, so this always rejects with wrong-phase.
   if (state.phase.type !== 'awaiting-rob-kong') {
     return ruleError('wrong-phase', 'declare-rob is only legal in the awaiting-rob-kong phase');
   }
-  return ruleError('not-implemented', `declare-rob is not yet implemented (seat ${action.seat})`);
+  return handleRobKongResponse(state, state.phase, action.seat, 'rob');
+}
+
+function resolveRobKongWindow(
+  state: GameState,
+  phase: Extract<Phase, { type: 'awaiting-rob-kong' }>,
+  responses: Readonly<Partial<Record<Seat, 'rob' | 'pass'>>>,
+): GameState {
+  const robbers = phase.eligibleRobbers.filter((seat) => responses[seat] === 'rob');
+
+  if (robbers.length > 0) {
+    return resolveRobKongSuccess(state, phase, robbers);
+  }
+  return resolveRobKongAllPass(state, phase);
+}
+
+/**
+ * At least one rob (RULES.md §7.2 step 3): the kong is cancelled/reverted,
+ * the honored robber(s) win off the kong declarer treated as the discarder.
+ */
+function resolveRobKongSuccess(
+  state: GameState,
+  phase: Extract<Phase, { type: 'awaiting-rob-kong' }>,
+  robbers: readonly Seat[],
+): GameState {
+  const honored = state.rules.multipleWinners ? robbers : [robbers[0]];
+  const declarerSeat = phase.declarerSeat;
+  const declarer = state.players[declarerSeat];
+
+  let players: Players;
+  if (phase.kongType === 'added') {
+    const revertedHand = revertAddedKong(declarer.hand, phase.kongTile);
+    players = replacePlayer(state.players, declarerSeat, { ...declarer, hand: revertedHand });
+  } else {
+    // Concealed kong: the declarer's hand was never mutated (pending model).
+    // Only the representative kongTile transfers to the robber; the other 3
+    // pending tiles were never removed and remain untouched in concealed hand.
+    const newConcealed = declarer.hand.concealedTiles.filter((t) => t.id !== phase.kongTile.id);
+    players = replacePlayer(state.players, declarerSeat, {
+      ...declarer,
+      hand: { ...declarer.hand, concealedTiles: newConcealed },
+    });
+  }
+
+  const handTai = computeHandTai({ winType: 'robbed-kong' }, state.rules);
+  const winners: WinnerResult[] = honored.map((seat) => ({
+    seat,
+    winType: 'robbed-kong',
+    handTai,
+    winningTile: phase.kongTile,
+  }));
+
+  const legs: PaymentLeg[] = winners.flatMap((w) =>
+    computePaymentLegs({
+      winnerSeat: w.seat,
+      winType: 'discard',
+      payerSeats: [declarerSeat],
+      handTai: w.handTai,
+      dealerSeat: state.dealerSeat,
+      repeatCount: state.repeatCount,
+      rules: state.rules,
+    }),
+  );
+
+  const { nextDealerSeat, nextRepeatCount } = computeNextDealerOnWin(
+    state.dealerSeat,
+    winners.map((w) => w.seat),
+    state.repeatCount,
+  );
+
+  return {
+    ...state,
+    players,
+    phase: {
+      type: 'hand-over',
+      result: { kind: 'win', winners, legs, nextDealerSeat, nextRepeatCount },
+    },
+  };
+}
+
+/**
+ * Everyone eligible passed (RULES.md §7.2 step 4): the kong stands. Every
+ * eligible-but-declined robber is barred by sacred discard (unless disabled).
+ * A pending concealed kong's meld is executed now (it was never mutated
+ * while the window was open); an added kong's hand is already in its
+ * post-promotion shape from `handleAddedKong`. Then the declarer draws their
+ * replacement tile.
+ */
+function resolveRobKongAllPass(state: GameState, phase: Extract<Phase, { type: 'awaiting-rob-kong' }>): GameState {
+  let players = state.players;
+
+  if (state.rules.sacredDiscard.enabled) {
+    for (const seat of phase.eligibleRobbers) {
+      const player = players[seat];
+      if (!player.barred) {
+        players = replacePlayer(players, seat, { ...player, barred: true });
+      }
+    }
+  }
+
+  if (phase.kongType === 'concealed' && phase.pendingConcealedKongTiles !== null) {
+    const pending = phase.pendingConcealedKongTiles;
+    const pendingIds = new Set(pending.map((t) => t.id));
+    const declarer = players[phase.declarerSeat];
+    const remainingConcealed = declarer.hand.concealedTiles.filter((t) => !pendingIds.has(t.id));
+    const newMeld: PlayerMeld = { kind: 'kong', concealed: true, tiles: pending };
+    players = replacePlayer(players, phase.declarerSeat, {
+      ...declarer,
+      hand: { concealedTiles: remainingConcealed, melds: [...declarer.hand.melds, newMeld] },
+    });
+  }
+
+  return kongReplacementDraw({ ...state, players }, phase.declarerSeat);
 }

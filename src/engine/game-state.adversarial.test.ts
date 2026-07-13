@@ -545,7 +545,15 @@ describe('tile conservation across multiple claim types', () => {
 // ================================================================================
 
 describe('3-way claim race: pung vs kong vs chow', () => {
-  it('kong (priority 2, nearest of {kong,pung}) wins over pung and chow under every response ordering', () => {
+  // NOTE (tester independent-verification pass): the `it` title below previously
+  // read "kong ... wins over pung and chow", which contradicted both this
+  // describe's own in-body comments and its assertions. Per RULES.md §6.1, kong
+  // and pung share priority level 2 and ties resolve by proximity to the
+  // discarder (nearest wins); proximity(seat=2, discarderSeat=0) = 2 <
+  // proximity(seat=3, discarderSeat=0) = 3, so the pung (seat 2) is nearer and
+  // wins over the kong (seat 3). The assertion (`currentTurnSeat === 2` with a
+  // pung meld) was always correct; only the title was wrong. Corrected here.
+  it('pung (priority 2, nearer to the discarder than the kong) wins over both the kong and the chow under every response ordering', () => {
     const discardedTile = tile('east');
     // seat 1 = nextSeat(0): chow-eligible. seat 2: pung-eligible. seat 3: kong-eligible.
     const chowH = chowEligibleHand('east', 'east'); // deliberately not a real chow shape; use dedicated wan chow below

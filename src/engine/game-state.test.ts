@@ -886,6 +886,31 @@ describe('sacred discard bars', () => {
     expect(result.currentTurnSeat).toBe(1); // kong (nearer) wins over the farther pung
     expect(result.players[3].barred).toBe(true);
   });
+
+  it('a seat whose pung claim WINS the window is still barred if they could have declared hu on the same tile', () => {
+    // Regression test: choosing pung over an available hu is a decline of hu
+    // per RULES.md §8, regardless of whether that pung claim ends up winning
+    // the claim window (no competing higher-priority claim here).
+    const discardedTile = tile('east');
+    const state = stateWith({
+      phase: { type: 'awaiting-claims', discarderSeat: 0, discardedTile, responses: {} },
+      players: [
+        defaultPlayerState(deadHandTiles()),
+        defaultPlayerState(deadHandTiles()),
+        defaultPlayerState(deadHandTiles()),
+        playerStateFromHand(dualEligibleOnEastHand()),
+      ],
+    });
+
+    let s: GameState | RuleError = applyAction(state, { type: 'pass', seat: 1 });
+    s = expectOk(s);
+    s = applyAction(s, { type: 'pass', seat: 2 });
+    s = expectOk(s);
+    const result = expectOk(applyAction(s, { type: 'claim', seat: 3, claim: { type: 'pung' } }));
+
+    expect(result.currentTurnSeat).toBe(3); // seat 3's pung wins the window uncontested
+    expect(result.players[3].barred).toBe(true); // yet still barred: they declined an available hu
+  });
 });
 
 // ================================================================================
@@ -1154,18 +1179,8 @@ describe('universal dispatch rejections', () => {
   });
 });
 
-describe('own-turn kong actions (Sub-plan A stubs)', () => {
-  it('declare-added-kong / declare-concealed-kong return not-implemented in a valid phase+seat, else wrong-phase/wrong-seat', () => {
-    const validState = stateWith({ currentTurnSeat: 0, phase: { type: 'awaiting-discard', drawnTile: null } });
-    expectRuleErrorCode(
-      applyAction(validState, { type: 'declare-added-kong', seat: 0, tileId: 'x' }),
-      'not-implemented',
-    );
-    expectRuleErrorCode(
-      applyAction(validState, { type: 'declare-concealed-kong', seat: 0, kind: { category: 'wind', wind: 'east' } }),
-      'not-implemented',
-    );
-
+describe('own-turn kong actions: wrong-phase / wrong-seat boundary', () => {
+  it('declare-added-kong / declare-concealed-kong are rejected with wrong-phase/wrong-seat outside their valid phase+seat', () => {
     const wrongPhaseState = stateWith({ currentTurnSeat: 0, phase: { type: 'awaiting-draw' } });
     expectRuleErrorCode(
       applyAction(wrongPhaseState, { type: 'declare-added-kong', seat: 0, tileId: 'x' }),
@@ -1187,7 +1202,7 @@ describe('own-turn kong actions (Sub-plan A stubs)', () => {
     );
   });
 
-  it('declare-rob always returns wrong-phase in Sub-plan A (awaiting-rob-kong is unreachable)', () => {
+  it('declare-rob returns wrong-phase outside awaiting-rob-kong', () => {
     const drawState = stateWith({ phase: { type: 'awaiting-draw' } });
     expectRuleErrorCode(applyAction(drawState, { type: 'declare-rob', seat: 1 }), 'wrong-phase');
 
