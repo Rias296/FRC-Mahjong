@@ -24,12 +24,9 @@ export const TABLE_STRINGS = {
   winTypeRobbedKong: 'by robbing the kong',
   paysWord: 'pays',
   handEndsInDraw: 'The hand ends in a draw',
-  dealerRepeats: 'Dealer repeats',
-  dealerRotates: 'Dealer rotates',
   huHeading: 'HU!',
 
   // Phase narration / claim window
-  kongRobWindowOpen: 'Kong declared — rob window open',
   barredBadge: 'Barred',
   dealerBadge: 'Dealer',
 
@@ -46,7 +43,6 @@ export const TABLE_STRINGS = {
 
   // Next hand / match complete
   nextHandButton: 'Next Hand',
-  matchCompleteHeading: 'Match Complete',
   backToHomeButton: 'Back to Home',
 
   // Rob kong prompt
@@ -80,11 +76,6 @@ const RULE_ERROR_MESSAGES: Readonly<Record<RuleErrorCode, string>> = {
 /** Short, player-facing copy for a server-rejected action. Exhaustive over RuleErrorCode. */
 export function ruleErrorMessage(code: RuleErrorCode): string {
   return RULE_ERROR_MESSAGES[code];
-}
-
-/** "{name} discarded {tile}" — tile should already be a display-formatted string (e.g. via frc.ts's tileKindLabel). */
-export function discardNarration(name: string, tile: string): string {
-  return `${name} discarded ${tile}`;
 }
 
 /** "waiting on {n} player(s)..." — falls back to "some" when the count is unknown. */

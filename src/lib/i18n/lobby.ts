@@ -58,13 +58,10 @@ export const LOBBY_STRINGS = {
   waitingForPlayerPlaceholder: 'Waiting for player…',
   matchStagingHeading: 'Match Staging',
   youBadge: 'You',
-  tableViewComingSoon: 'Full table view coming soon.',
+  tableOpensWhenFull: 'The table opens as soon as all four seats are filled.',
 
   // Room page states
-  loadingMatch: 'Loading match…',
   matchNotFoundHeading: 'Match Not Found',
   matchNotFoundBody: 'This match no longer exists, or the room code is incorrect.',
-  connectionErrorHeading: 'Connection Problem',
-  connectionErrorBody: 'We couldn’t load this match. Check your connection and try again.',
   joinThisMatchHeading: 'Join This Match',
 } as const;

@@ -36,6 +36,7 @@ export function WaitingRoom({ view, viewerSeat }: WaitingRoomProps): React.JSX.E
 
   return (
     <div className="flex w-full max-w-md flex-col gap-6">
+      <h1 className="text-center font-display text-2xl text-foreground">{LOBBY_STRINGS.matchStagingHeading}</h1>
       <Card className="glass">
         <CardHeader className="items-center text-center">
           <CardTitle className="text-sm text-muted-foreground">{LOBBY_STRINGS.roomCodeLabel}</CardTitle>
@@ -76,7 +77,7 @@ export function WaitingRoom({ view, viewerSeat }: WaitingRoomProps): React.JSX.E
         })}
       </div>
 
-      <p className="text-center text-xs text-muted-foreground">{LOBBY_STRINGS.tableViewComingSoon}</p>
+      <p className="text-center text-xs text-muted-foreground">{LOBBY_STRINGS.tableOpensWhenFull}</p>
     </div>
   );
 }
