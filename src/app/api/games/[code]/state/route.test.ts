@@ -101,6 +101,15 @@ describe('GET /api/games/[code]/state', () => {
     expect(view.handNumber).toBeNull();
     expect(view.phase).toBeNull();
     expect(view.wallRemaining).toBeNull();
+    // CRITICAL (tester round): currentTurnSeat/dealerSeat/repeatCount must be
+    // null in EXACTLY the waiting-for-players case, per protocol.ts's field
+    // doc ("Null iff `phase` is null"). This route file's own
+    // waitingForPlayersView branch is a second, independent implementation
+    // of that contract from views.ts's toClientView — pin both explicitly so
+    // they can never silently drift apart.
+    expect(view.currentTurnSeat).toBeNull();
+    expect(view.dealerSeat).toBeNull();
+    expect(view.repeatCount).toBeNull();
     expect(view.viewerSeat).toBe(0);
     expect(view.players[0].displayName).toBe('Alice');
     expect(view.players[0].isViewer).toBe(true);
@@ -125,6 +134,13 @@ describe('GET /api/games/[code]/state', () => {
     expect(view.prevailingWind).toBe('east');
     expect(view.viewerSeat).toBe(0);
     expect(view.wallRemaining).toBeGreaterThan(0);
+    // CRITICAL (tester round): the counterpart to the waiting-for-players
+    // null-check above — once genuinely in-progress, all three fields must
+    // be non-null, and agree with the real engine state (seat 0 is dealer
+    // and currentTurnSeat on the opening draw; repeatCount starts at 0).
+    expect(view.currentTurnSeat).toBe(0);
+    expect(view.dealerSeat).toBe(0);
+    expect(view.repeatCount).toBe(0);
 
     const me = view.players[0];
     expect(me.isViewer).toBe(true);
@@ -152,5 +168,59 @@ describe('GET /api/games/[code]/state', () => {
     expect(viewSeat1.players[1].concealedTiles).not.toBeNull();
     expect(viewSeat1.players[0].isViewer).toBe(false);
     expect(viewSeat1.players[0].concealedTiles).toBeNull();
+  });
+
+  it(
+    'CRITICAL (tester round): currentTurnSeat/dealerSeat/repeatCount are genuinely public — every ' +
+      'one of the 4 seats sees byte-identical values for these 3 fields via this live HTTP endpoint, ' +
+      'unlike concealedTiles/barredVisible which correctly DO vary per viewer',
+    async () => {
+      const { roomCode, tokens } = await fullyJoinedGame();
+      const views = await Promise.all(
+        tokens.map(async (token) => {
+          const response = await callState(roomCode, token);
+          return (await response.json()) as ClientGameView;
+        }),
+      );
+
+      for (const v of views) {
+        expect(v.currentTurnSeat).toBe(0);
+        expect(v.dealerSeat).toBe(0);
+        expect(v.repeatCount).toBe(0);
+      }
+      // Contrast: concealedTiles genuinely DOES vary per viewer (proves the
+      // test fixture isn't accidentally exercising a code path where
+      // everything happens to be the same).
+      expect(views[0].players[0].concealedTiles).not.toBeNull();
+      expect(views[1].players[0].concealedTiles).toBeNull();
+    },
+  );
+
+  it('waiting-for-players view marks only joined seats occupied', async () => {
+    const created = await createGame(db, { displayName: 'Alice' });
+    await joinGame(db, created.roomCode, { displayName: 'Bob' });
+
+    const response = await callState(created.roomCode, created.playerToken);
+    const view = (await response.json()) as ClientGameView;
+
+    expect(view.status).toBe('waiting-for-players');
+    expect(view.players[0].occupied).toBe(true);
+    expect(view.players[1].occupied).toBe(true);
+    expect(view.players[2].occupied).toBe(false);
+    expect(view.players[3].occupied).toBe(false);
+  });
+
+  it('waiting view does not mark a seat occupied merely because a player is named "Seat 2"', async () => {
+    const created = await createGame(db, { displayName: 'Seat 2' });
+
+    const response = await callState(created.roomCode, created.playerToken);
+    const view = (await response.json()) as ClientGameView;
+
+    expect(view.status).toBe('waiting-for-players');
+    expect(view.players[0].displayName).toBe('Seat 2');
+    expect(view.players[0].occupied).toBe(true);
+    expect(view.players[1].occupied).toBe(false);
+    expect(view.players[2].occupied).toBe(false);
+    expect(view.players[3].occupied).toBe(false);
   });
 });

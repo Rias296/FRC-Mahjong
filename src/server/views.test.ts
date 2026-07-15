@@ -134,6 +134,27 @@ describe('toClientView: top-level fields', () => {
     expect(result.players[0].displayName).toBe('Solo');
     expect(result.players[1].displayName).toBe('Seat 1');
   });
+
+  it('sets occupied true for every seated player and false for absent seats', () => {
+    const state = stateWith({});
+    const result = toClientView(
+      state,
+      null,
+      [
+        { seat: 0 as Seat, displayName: 'Alice' },
+        { seat: 2 as Seat, displayName: 'Carol' },
+      ],
+      'X',
+      'waiting-for-players',
+      null,
+      null,
+      1,
+    );
+    expect(result.players[0].occupied).toBe(true);
+    expect(result.players[1].occupied).toBe(false);
+    expect(result.players[2].occupied).toBe(true);
+    expect(result.players[3].occupied).toBe(false);
+  });
 });
 
 describe('toClientView: player redaction', () => {
@@ -596,6 +617,238 @@ describe('toClientView: player redaction — adversarial (tester round)', () => 
       expect(claimsView.phase).not.toHaveProperty('stillWaitingCount');
       expect(claimsView.phase).not.toHaveProperty('youMayRob');
       expect(JSON.stringify(claimsView.phase)).not.toContain('stillWaitingCount');
+    },
+  );
+});
+
+describe('toClientView: top-level fields — currentTurnSeat, dealerSeat, repeatCount', () => {
+  it('exposes currentTurnSeat, dealerSeat, and repeatCount identically to every viewer including a null-seat spectator', () => {
+    const state = stateWith({ currentTurnSeat: 2 as Seat, dealerSeat: 3 as Seat, repeatCount: 2 });
+
+    for (const viewer of [0, 1, 2, 3, null] as (Seat | null)[]) {
+      const result = view(state, viewer);
+      expect(result.currentTurnSeat).toBe(2);
+      expect(result.dealerSeat).toBe(3);
+      expect(result.repeatCount).toBe(2);
+    }
+  });
+
+  it(
+    'CRITICAL: these three fields are byte-identical across every viewer for every phase type, not ' +
+      'just awaiting-draw — proves they are never accidentally routed through any of the ' +
+      'per-viewer-branching logic used elsewhere in redactPhase/redactPlayer',
+    () => {
+      const kongTile = tile('east');
+      const phases: Array<GameState['phase']> = [
+        { type: 'awaiting-draw' },
+        { type: 'awaiting-discard', drawnTile: tile('wan1') },
+        {
+          type: 'awaiting-claims',
+          discarderSeat: 0 as Seat,
+          discardedTile: tile('tong5'),
+          responses: { 1: 'pass' },
+        },
+        {
+          type: 'awaiting-rob-kong',
+          declarerSeat: 0 as Seat,
+          kongTile,
+          kongType: 'added',
+          pendingConcealedKongTiles: null,
+          eligibleRobbers: [1, 3],
+          responses: { 1: 'pass' },
+        },
+        {
+          type: 'hand-over',
+          result: { kind: 'exhaustive-draw', nextDealerSeat: 1 as Seat, nextRepeatCount: 0 },
+        },
+      ];
+
+      for (const phase of phases) {
+        const state = stateWith({ currentTurnSeat: 1 as Seat, dealerSeat: 2 as Seat, repeatCount: 4, phase });
+        const views = ([0, 1, 2, 3, null] as (Seat | null)[]).map((viewer) => view(state, viewer));
+        for (const v of views) {
+          expect(v.currentTurnSeat).toBe(1);
+          expect(v.dealerSeat).toBe(2);
+          expect(v.repeatCount).toBe(4);
+        }
+      }
+    },
+  );
+});
+
+describe('toClientView: currentTurnSeat/dealerSeat/repeatCount null-handling contract with status', () => {
+  it(
+    'CRITICAL: currentTurnSeat/dealerSeat/repeatCount are non-null for EVERY non-waiting status ' +
+      '(in-progress AND finished) — a finished game keeps the last hand\'s real GameState (the ' +
+      'route never fabricates a null-phase view for "finished"), so views.ts must agree with that ' +
+      'contract for both statuses, not just "in-progress"',
+    () => {
+      const state = stateWith({
+        currentTurnSeat: 3 as Seat,
+        dealerSeat: 1 as Seat,
+        repeatCount: 5,
+        phase: {
+          type: 'hand-over',
+          result: { kind: 'exhaustive-draw', nextDealerSeat: 1 as Seat, nextRepeatCount: 6 },
+        },
+      });
+
+      const finishedView = toClientView(state, null, PLAYERS, 'ABC123', 'finished', 9, 'north', 100);
+      expect(finishedView.status).toBe('finished');
+      expect(finishedView.currentTurnSeat).toBe(3);
+      expect(finishedView.dealerSeat).toBe(1);
+      expect(finishedView.repeatCount).toBe(5);
+
+      const inProgressView = toClientView(state, null, PLAYERS, 'ABC123', 'in-progress', 9, 'north', 100);
+      expect(inProgressView.currentTurnSeat).toBe(3);
+      expect(inProgressView.dealerSeat).toBe(1);
+      expect(inProgressView.repeatCount).toBe(5);
+    },
+  );
+
+  it(
+    'views.ts itself has no code path that produces null for these three fields — they are a direct, ' +
+      'unconditional passthrough of state.currentTurnSeat/dealerSeat/repeatCount, which are non-optional ' +
+      'GameState fields; the ONLY null-producing code path in the whole app is the separate ' +
+      'waitingForPlayersView branch in src/app/api/games/[code]/state/route.ts, which never calls ' +
+      'toClientView at all. This test pins that views.ts is unconditional so a future edit cannot ' +
+      'silently reintroduce a null branch here without failing this assertion.',
+    () => {
+      const state = stateWith({ currentTurnSeat: 0 as Seat, dealerSeat: 0 as Seat, repeatCount: 0 });
+      const result = view(state, 0 as Seat);
+      expect(result.currentTurnSeat).not.toBeNull();
+      expect(result.dealerSeat).not.toBeNull();
+      expect(result.repeatCount).not.toBeNull();
+    },
+  );
+});
+
+describe('toClientView: phase redaction — awaiting-rob-kong — youHaveResponded', () => {
+  it('sets youHaveResponded true only for an eligible robber with a recorded response', () => {
+    const kongTile = tile('east');
+    const state = stateWith({
+      phase: {
+        type: 'awaiting-rob-kong',
+        declarerSeat: 0 as Seat,
+        kongTile,
+        kongType: 'added',
+        pendingConcealedKongTiles: null,
+        eligibleRobbers: [1, 3],
+        responses: { 1: 'pass' },
+      },
+    });
+
+    const respondedRobber = view(state, 1 as Seat);
+    expect(respondedRobber.phase?.youHaveResponded).toBe(true);
+
+    const unrespondedRobber = view(state, 3 as Seat);
+    expect(unrespondedRobber.phase?.youHaveResponded).toBeUndefined();
+  });
+
+  it('leaves youHaveResponded undefined for the declarer, bystanders, and spectators', () => {
+    const kongTile = tile('south');
+    const state = stateWith({
+      phase: {
+        type: 'awaiting-rob-kong',
+        declarerSeat: 0 as Seat,
+        kongTile,
+        kongType: 'added',
+        pendingConcealedKongTiles: null,
+        eligibleRobbers: [1, 3],
+        responses: { 1: 'pass', 3: 'pass' },
+      },
+    });
+
+    const declarerView = view(state, 0 as Seat);
+    expect(declarerView.phase?.youHaveResponded).toBeUndefined();
+
+    const bystanderView = view(state, 2 as Seat);
+    expect(bystanderView.phase?.youHaveResponded).toBeUndefined();
+
+    const spectatorView = view(state, null);
+    expect(spectatorView.phase?.youHaveResponded).toBeUndefined();
+  });
+
+  it('youHaveResponded reveals nothing about which other seats have responded', () => {
+    const kongTile = tile('west');
+    const state = stateWith({
+      phase: {
+        type: 'awaiting-rob-kong',
+        declarerSeat: 0 as Seat,
+        kongTile,
+        kongType: 'added',
+        pendingConcealedKongTiles: null,
+        eligibleRobbers: [1, 3],
+        // Only seat 1 has responded; seat 3 has not.
+        responses: { 1: 'pass' },
+      },
+    });
+
+    // The responded robber sees their own true flag.
+    const respondedRobber = view(state, 1 as Seat);
+    expect(respondedRobber.phase?.youHaveResponded).toBe(true);
+    expect(JSON.stringify(respondedRobber.phase)).not.toContain('eligibleRobbers');
+
+    // The OTHER eligible robber (unresponded) sees no trace of seat 1's response.
+    const otherRobber = view(state, 3 as Seat);
+    expect(otherRobber.phase?.youHaveResponded).toBeUndefined();
+    expect(otherRobber.phase).not.toHaveProperty('responses');
+    expect(JSON.stringify(otherRobber.phase)).not.toContain('"pass"');
+
+    // A bystander sees nothing about anyone's response.
+    const bystander = view(state, 2 as Seat);
+    expect(bystander.phase?.youHaveResponded).toBeUndefined();
+    expect(JSON.stringify(bystander.phase)).not.toContain('youHaveResponded');
+  });
+
+  it(
+    'CRITICAL: with A responding "rob" (not just "pass"), B\'s (unresponded) view carries no ' +
+      'youHaveResponded key at all (strict property-absence, not merely an undefined value) — the ' +
+      "field must be literally OMITTED from the object (matching the field's own JSDoc: 'Only set " +
+      "true, never false'), not present-but-undefined, and RESPONSE CONTENT ('rob' vs 'pass') must " +
+      'never leak into ANY field visible to B',
+    () => {
+      const kongTile = tile('north');
+      const state = stateWith({
+        phase: {
+          type: 'awaiting-rob-kong',
+          declarerSeat: 0 as Seat,
+          kongTile,
+          kongType: 'added',
+          pendingConcealedKongTiles: null,
+          eligibleRobbers: [1, 3],
+          // Seat 1 (A) robbed; seat 3 (B) has not responded at all.
+          responses: { 1: 'rob' },
+        },
+      });
+
+      const bRobberView = view(state, 3 as Seat);
+      // Strict: the key must not exist on the object, not merely be `undefined`.
+      expect(bRobberView.phase).not.toHaveProperty('youHaveResponded');
+      expect(bRobberView.phase?.youMayRob).toBe(true);
+      expect(bRobberView.phase?.stillWaitingCount).toBe(1);
+      expect(JSON.stringify(bRobberView.phase)).not.toContain('rob"'); // no "rob" claim-content leak
+      expect(JSON.stringify(bRobberView.phase)).not.toContain('responses');
+
+      const aRobberView = view(state, 1 as Seat);
+      expect(aRobberView.phase).toHaveProperty('youHaveResponded', true);
+
+      // Bystander (never eligible): strict property-absence too, matching the
+      // "only set true, never false" contract for a non-eligible seat.
+      const bystanderView = view(state, 2 as Seat);
+      expect(bystanderView.phase).not.toHaveProperty('youHaveResponded');
+
+      // Declarer: strict property-absence — the declarer is never in
+      // eligibleRobbers (findRobbers excludes the kong declarer by
+      // construction, per src/engine/game-state.ts), so youMayRob is false
+      // and youHaveResponded must likewise be entirely absent.
+      const declarerView = view(state, 0 as Seat);
+      expect(declarerView.phase?.youMayRob).toBe(false);
+      expect(declarerView.phase).not.toHaveProperty('youHaveResponded');
+
+      // Spectator: same strict absence.
+      const spectatorView = view(state, null);
+      expect(spectatorView.phase).not.toHaveProperty('youHaveResponded');
     },
   );
 });

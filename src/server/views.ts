@@ -64,6 +64,7 @@ function redactPlayer(
   seat: Seat,
   viewerSeat: Seat | null,
   displayName: string,
+  occupied: boolean,
 ): ClientPlayerView {
   const player = state.players[seat];
   const isViewer = seat === viewerSeat;
@@ -72,6 +73,7 @@ function redactPlayer(
     seat,
     displayName,
     isViewer,
+    occupied,
     concealedTiles: isViewer ? player.hand.concealedTiles.map(toClientTile) : null,
     concealedCount: player.hand.concealedTiles.length,
     melds: player.hand.melds.map((meld) => redactMeld(meld, isViewer)),
@@ -124,12 +126,22 @@ function redactPhase(state: GameState, viewerSeat: Seat | null): ClientPhaseView
       const kongTileVisible: ClientTile | null =
         phase.kongType === 'added' || isDeclarer || youMayRob ? toClientTile(phase.kongTile) : null;
 
+      // Only set (never `false`) when the viewer is an eligible robber who
+      // has already recorded a response — matches the optional-field
+      // convention used by youMayRob/stillWaitingCount elsewhere in this
+      // phase branch. Leaving it undefined for everyone else (declarer,
+      // bystanders, spectators) avoids revealing anything about other seats'
+      // responses.
+      const youHaveResponded =
+        youMayRob && viewerSeat !== null && phase.responses[viewerSeat] !== undefined ? true : undefined;
+
       return {
         type: 'awaiting-rob-kong',
         declarerSeat: phase.declarerSeat,
         kongTileVisible,
         youMayRob,
         stillWaitingCount,
+        ...(youHaveResponded !== undefined ? { youHaveResponded } : {}),
       };
     }
 
@@ -156,7 +168,7 @@ export function toClientView(
   const nameBySeat = new Map(players.map((p) => [p.seat, p.displayName]));
 
   const clientPlayers: ClientPlayerView[] = SEATS.map((seat) =>
-    redactPlayer(state, seat, viewerSeat, nameBySeat.get(seat) ?? `Seat ${seat}`),
+    redactPlayer(state, seat, viewerSeat, nameBySeat.get(seat) ?? `Seat ${seat}`, nameBySeat.has(seat)),
   );
 
   return {
@@ -169,5 +181,8 @@ export function toClientView(
     wallRemaining: remaining(state.wall),
     phase: redactPhase(state, viewerSeat),
     viewerSeat,
+    currentTurnSeat: state.currentTurnSeat,
+    dealerSeat: state.dealerSeat,
+    repeatCount: state.repeatCount,
   };
 }

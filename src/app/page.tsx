@@ -1,65 +1,133 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Field, FieldGroup, FieldLabel, FieldError } from '@/components/ui/field';
+import { JoinRoomForm } from '@/components/lobby/join-room-form';
+import { createGame } from '@/lib/api-client';
+import { loadSession, saveSession, type GameSession } from '@/lib/session';
+import { LOBBY_STRINGS } from '@/lib/i18n/lobby';
+
+export default function Home(): React.JSX.Element {
+  const router = useRouter();
+  const [displayName, setDisplayName] = useState('');
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [resumeSession, setResumeSession] = useState<GameSession | null>(null);
+
+  useEffect(() => {
+    // localStorage is browser-only; reading it must be deferred to a
+    // post-mount effect (not computed during render) to avoid an SSR
+    // hydration mismatch. This is a one-shot read of already-persisted
+    // session state, not an external-store subscription.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setResumeSession(loadSession());
+  }, []);
+
+  async function handleCreate(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (creating) return;
+
+    const trimmedName = displayName.trim();
+    if (trimmedName.length === 0) {
+      setNameError(LOBBY_STRINGS.displayNameRequired);
+      return;
+    }
+    setNameError(null);
+
+    setCreating(true);
+    try {
+      const result = await createGame({ displayName: trimmedName });
+      if (result.ok) {
+        saveSession({
+          roomCode: result.data.roomCode,
+          seat: 0,
+          playerToken: result.data.playerToken,
+          displayName: trimmedName,
+        });
+        router.push(`/room/${result.data.roomCode}`);
+        return;
+      }
+
+      switch (result.error.kind) {
+        case 'network-error':
+          toast.error(LOBBY_STRINGS.errorNetwork);
+          break;
+        case 'validation-error':
+          toast.error(result.error.message || LOBBY_STRINGS.errorGeneric);
+          break;
+        default:
+          toast.error(LOBBY_STRINGS.errorServer);
+          break;
+      }
+    } finally {
+      setCreating(false);
+    }
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="flex flex-1 flex-col items-center justify-center gap-8 px-4 py-12">
+      <div className="flex flex-col items-center gap-2 text-center">
+        <h1 className="font-display text-3xl text-foreground sm:text-4xl">{LOBBY_STRINGS.appTitle}</h1>
+        <p className="max-w-md text-muted-foreground">{LOBBY_STRINGS.appTagline}</p>
+      </div>
+
+      {resumeSession !== null && (
+        <div className="glass w-full max-w-md rounded-xl px-4 py-3 text-sm">
+          <span className="text-muted-foreground">{LOBBY_STRINGS.resumeSessionPrefix} </span>
+          <Link href={`/room/${resumeSession.roomCode}`} className="font-medium text-primary hover:underline">
+            {LOBBY_STRINGS.resumeSessionLink} ({resumeSession.roomCode})
+          </Link>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+      )}
+
+      <div className="grid w-full max-w-md gap-6">
+        <Card className="glass">
+          <CardHeader>
+            <CardTitle>{LOBBY_STRINGS.createMatchButton}</CardTitle>
+            <CardDescription>{LOBBY_STRINGS.appTagline}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleCreate}>
+              <FieldGroup>
+                <Field data-invalid={nameError !== null || undefined}>
+                  <FieldLabel htmlFor="create-display-name">{LOBBY_STRINGS.displayNameLabel}</FieldLabel>
+                  <Input
+                    id="create-display-name"
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    placeholder={LOBBY_STRINGS.displayNamePlaceholder}
+                    aria-invalid={nameError !== null || undefined}
+                    disabled={creating}
+                  />
+                  {nameError !== null && <FieldError>{nameError}</FieldError>}
+                </Field>
+                <Button type="submit" disabled={creating}>
+                  {creating ? LOBBY_STRINGS.creatingMatchButton : LOBBY_STRINGS.createMatchButton}
+                </Button>
+              </FieldGroup>
+            </form>
+          </CardContent>
+        </Card>
+
+        <Card className="glass">
+          <CardHeader>
+            <CardTitle>{LOBBY_STRINGS.joinMatchButton}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <JoinRoomForm
+              onJoined={(session) => {
+                router.push(`/room/${session.roomCode}`);
+              }}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

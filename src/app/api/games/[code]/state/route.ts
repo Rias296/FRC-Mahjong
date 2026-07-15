@@ -33,6 +33,7 @@ function waitingForPlayersView(
     seat,
     displayName: nameBySeat.get(seat) ?? `Seat ${seat}`,
     isViewer: seat === viewerSeat,
+    occupied: nameBySeat.has(seat),
     concealedTiles: null,
     concealedCount: 0,
     melds: [],
@@ -51,6 +52,9 @@ function waitingForPlayersView(
     wallRemaining: null,
     phase: null,
     viewerSeat,
+    currentTurnSeat: null,
+    dealerSeat: null,
+    repeatCount: null,
   };
 }
 

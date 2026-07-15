@@ -35,6 +35,8 @@ export interface ClientPlayerView {
   readonly seat: Seat;
   readonly displayName: string;
   readonly isViewer: boolean;
+  /** True iff a real player row exists for this seat (i.e. someone has joined it). */
+  readonly occupied: boolean;
   /** Full tiles if isViewer, null (see concealedCount) otherwise. */
   readonly concealedTiles: readonly ClientTile[] | null;
   /** Always present; the count, for opponents' hidden hands. */
@@ -64,6 +66,13 @@ export interface ClientPhaseView {
   /** awaiting-rob-kong: true iff viewer is in eligibleRobbers. */
   readonly youMayRob?: boolean;
   /**
+   * awaiting-rob-kong ONLY: true iff the viewer is in eligibleRobbers AND has
+   * already submitted a rob/pass response. Undefined for the declarer,
+   * bystanders, spectators, and every other phase type — never reveals
+   * anything about whether OTHER seats have responded.
+   */
+  readonly youHaveResponded?: boolean;
+  /**
    * awaiting-rob-kong: COUNT of eligible-and-unresponded seats (not the list —
    * revealing which seats are eligible-and-pending would leak rob-kong
    * eligibility, i.e. real hand-relationship information, to every viewer
@@ -85,6 +94,12 @@ export interface ClientGameView {
   readonly wallRemaining: number | null;
   readonly phase: ClientPhaseView | null;
   readonly viewerSeat: Seat | null;
+  /** Null iff `phase` is null (status is waiting-for-players). */
+  readonly currentTurnSeat: Seat | null;
+  /** Null iff `phase` is null (status is waiting-for-players). */
+  readonly dealerSeat: Seat | null;
+  /** Null iff `phase` is null (status is waiting-for-players). */
+  readonly repeatCount: number | null;
 }
 
 export interface CreateGameRequest {

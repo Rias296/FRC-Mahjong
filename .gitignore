@@ -42,3 +42,8 @@ yarn-error.log*
 next-env.d.ts
 docs/DECISIONS.md
 docs/RULES.md
+docs/DESIGN.md
+
+# local dev database
+dev-local.db
+dev-local.db-*
