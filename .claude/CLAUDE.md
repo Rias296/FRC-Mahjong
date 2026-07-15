@@ -12,6 +12,7 @@ planner (fable) → builder (sonnet) → tester (sonnet) → reviewer (sonnet). 
 - `src/app/` + `src/components/` — UI only. shadcn/ui first; never hand-roll what shadcn provides.
 - `src/lib/theme/frc.ts` — FRC terminology skin (display-name map). Engine/DB/wire protocol use canonical terms only: tile, pung, kong, chow, hu, tai, flower.
 - Rule truth lives in `docs/RULES.md`; rule toggles in `src/engine/rules-config.ts`.
+- Art direction: traditional Chinese / oriental (Mahjong Soul-inspired), NOT modern, NOT glassmorphism. Pixel tile art with `image-rendering: pixelated`. Design tokens/typography/ornaments documented in `docs/THEME.md`.
 
 ## Conventions (reviewer enforces these)
 - TypeScript strict, no `any`, no unexplained `@ts-ignore`.
