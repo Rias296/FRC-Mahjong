@@ -15,6 +15,7 @@ function player(seat: Seat, isViewer: boolean): ClientPlayerView {
     flowers: [],
     discards: [],
     barredVisible: isViewer ? false : null,
+    matchPoints: 0,
   };
 }
 

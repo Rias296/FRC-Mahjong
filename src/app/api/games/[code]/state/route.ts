@@ -7,8 +7,7 @@
 
 import { getDb } from '@/server/db';
 import { getGameByRoomCode, listPlayers, resolvePlayerToken } from '@/server/games';
-import { getCurrentHandState } from '@/server/replay';
-import { getStartHandPayload } from '@/server/actions-log';
+import { getMatchSnapshot } from '@/server/replay';
 import { toClientView } from '@/server/views';
 import type { ClientGameView, ClientPlayerView } from '@/lib/protocol';
 import type { Seat } from '@/engine/seats';
@@ -40,6 +39,7 @@ function waitingForPlayersView(
     flowers: [],
     discards: [],
     barredVisible: null,
+    matchPoints: 0,
   }));
 
   return {
@@ -87,11 +87,11 @@ export async function GET(
   const status = game.status as 'waiting-for-players' | 'in-progress' | 'finished';
   const players = await listPlayers(db, game.gameId);
 
-  const current = await getCurrentHandState(db, game.gameId);
-  if (current === null) {
-    // getCurrentHandState returning null means this exact read observed
-    // zero action rows for the game — by definition the latest seq AT THAT
-    // READ was 0. Report 0 directly rather than a second, independent
+  const snapshot = await getMatchSnapshot(db, game.gameId);
+  if (snapshot === null) {
+    // getMatchSnapshot returning null means this exact read observed zero
+    // action rows for the game — by definition the latest seq AT THAT READ
+    // was 0. Report 0 directly rather than a second, independent
     // getLatestSeq call: a concurrent 4th-join could append the hand-1
     // start-hand row between the two reads, making a fresh getLatestSeq
     // call return a seq the just-computed "still waiting" content doesn't
@@ -102,16 +102,20 @@ export async function GET(
     return Response.json(waitingForPlayersView(code, status, players, viewerSeat, 0), { status: 200 });
   }
 
-  const prevailingWind = (await getStartHandPayload(db, game.gameId, current.handNumber)).prevailingWind;
+  // Every field below comes from this ONE getMatchSnapshot read (state,
+  // handNumber, lastSeq, prevailingWind, matchPoints all derived from the
+  // same fetched action log) — never assembled from separate queries taken
+  // at different times.
   const view = toClientView(
-    current.state,
+    snapshot.state,
     viewerSeat,
     players,
     code,
     status,
-    current.handNumber,
-    prevailingWind,
-    current.lastSeq,
+    snapshot.handNumber,
+    snapshot.prevailingWind,
+    snapshot.lastSeq,
+    snapshot.matchPoints,
   );
 
   return Response.json(view, { status: 200 });

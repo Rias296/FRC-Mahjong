@@ -86,7 +86,7 @@ export function PlayerRack({
   }
 
   return (
-    <div className="flex flex-col items-center gap-2">
+    <div className="flex flex-col items-center gap-2 rounded-lg border border-primary-hover/70 p-2">
       {player.barredVisible === true && <Badge variant="destructive">{TABLE_STRINGS.barredBadge}</Badge>}
 
       {player.melds.length > 0 && (

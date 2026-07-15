@@ -1,5 +1,6 @@
 import { Hexagon } from 'lucide-react';
 import { tileGlyph, type AccentKey } from '@/lib/table/tile-display';
+import { TILE_ART_MODE, tileBackSpriteStyle, tileSpriteStyle } from '@/lib/table/tile-sprites';
 import { tileKindLabel } from '@/lib/theme/frc';
 import { cn } from '@/lib/utils';
 import type { ClientTile } from '@/lib/protocol';
@@ -9,9 +10,9 @@ const ACCENT_TEXT_CLASSES: Readonly<Record<AccentKey, string>> = {
   'dragon-red': 'text-destructive',
   tiao: 'text-success',
   'dragon-green': 'text-success',
-  tong: 'text-primary',
-  wind: 'text-primary-deep',
-  'dragon-white': 'text-primary-deep',
+  tong: 'text-frc-blue-text',
+  wind: 'text-frc-blue-text',
+  'dragon-white': 'text-frc-blue-text',
   flower: 'text-accent',
 };
 
@@ -23,8 +24,24 @@ export interface TileFaceProps {
 }
 
 export function TileFace({ tile, className }: TileFaceProps): React.JSX.Element {
-  const glyph = tileGlyph(tile.kind);
   const label = tileKindLabel(tile.kind);
+
+  if (TILE_ART_MODE === 'sprite') {
+    const sprite = tileSpriteStyle(tile.kind);
+    if (sprite !== null) {
+      return (
+        <div
+          role="img"
+          title={label}
+          aria-label={label}
+          style={sprite}
+          className={cn(TILE_SIZE_CLASSES, 'pixelated flex-shrink-0 bg-no-repeat', className)}
+        />
+      );
+    }
+  }
+
+  const glyph = tileGlyph(tile.kind);
   const accentClass = ACCENT_TEXT_CLASSES[glyph.accent];
 
   return (
@@ -49,6 +66,17 @@ export interface FaceDownTileProps {
 }
 
 export function FaceDownTile({ className }: FaceDownTileProps): React.JSX.Element {
+  if (TILE_ART_MODE === 'sprite') {
+    return (
+      <div
+        role="img"
+        aria-hidden="true"
+        style={tileBackSpriteStyle()}
+        className={cn(TILE_SIZE_CLASSES, 'pixelated flex-shrink-0 bg-no-repeat', className)}
+      />
+    );
+  }
+
   return (
     <div
       role="img"

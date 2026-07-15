@@ -19,10 +19,12 @@ import {
 import { canChow, canKongFromDiscard, canPung } from '../engine/actions';
 import { canWin } from '../engine/hand';
 import type { RulesConfig } from '../engine/rules-config';
+import { sumPaymentLegs, type SeatTotals } from '../engine/scoring';
 import { SEATS, type Seat } from '../engine/seats';
 import {
   appendActionAtSeq,
   appendStartHand,
+  listActionsForGame,
   listActionsForHand,
   type ActionLogRow,
   type StartHandPayload,
@@ -147,6 +149,107 @@ export async function getCurrentHandState(
   const state = foldActionRows(gameId, handNumber, rows, rules);
   const lastSeq = rows[rows.length - 1].seq;
   return { state, handNumber, lastSeq };
+}
+
+// --- getMatchSnapshot ----------------------------------------------------------
+
+/**
+ * A read-path-only counterpart to `getCurrentHandState` that additionally
+ * derives the running per-seat match-points total (`matchPoints`) across
+ * every completed hand of the match so far, alongside the same
+ * `state`/`handNumber`/`lastSeq`/`prevailingWind` a caller would otherwise
+ * assemble via `getCurrentHandState` + `getStartHandPayload`.
+ *
+ * Fetches the WHOLE game's action log in a single `listActionsForGame` call
+ * (plus the same one-time `games.rules_config` read `getCurrentHandState`
+ * does), groups the rows by `hand_number`, and folds each hand's rows
+ * through the same `foldActionRows` used everywhere else in this module (no
+ * duplicated replay logic). For every hand whose folded result reached
+ * `hand-over` with `result.kind === 'win'`, that hand's `PaymentLeg[]` is
+ * folded into a running `SeatTotals` via `sumPaymentLegs`; an
+ * `exhaustive-draw` hand contributes no legs (no seat's total changes).
+ *
+ * Deliberately NOT used by `getCurrentHandState` itself or by any write-path
+ * function (`submitAction`, `applyAutoPass`, `appendActionAtSeq`):
+ * `getCurrentHandState` is re-invoked on every optimistic-concurrency retry
+ * inside those write paths, and replaying the ENTIRE match on every retry
+ * would multiply write-path cost for data (`matchPoints`) the write path
+ * never uses. Callers that need match-points-aware responses (the API
+ * routes) call this directly instead, as a single self-consistent snapshot
+ * taken right after their own write already landed (safe: the action log is
+ * append-only/monotonic, so a snapshot taken after a successful append is
+ * guaranteed to include it).
+ *
+ * Returns null under the same condition as `getCurrentHandState`: zero
+ * action rows recorded for this game yet.
+ */
+export async function getMatchSnapshot(
+  db: Client,
+  gameId: string,
+): Promise<{
+  state: GameState;
+  handNumber: number;
+  lastSeq: number;
+  matchPoints: SeatTotals;
+  prevailingWind: PrevailingWind;
+} | null> {
+  const rows = await listActionsForGame(db, gameId);
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const gameRow = await db.execute({
+    sql: 'SELECT rules_config FROM games WHERE id = ?',
+    args: [gameId],
+  });
+  if (gameRow.rows.length === 0) {
+    throw new Error(`getMatchSnapshot: no game found with id ${gameId}`);
+  }
+  const rules = JSON.parse(String(gameRow.rows[0].rules_config)) as RulesConfig;
+
+  // Group by hand_number, preserving each hand's own seq-ascending row order
+  // (listActionsForGame already returns rows ordered by seq ASC across the
+  // whole game, which is also seq-ascending within each hand_number group).
+  const rowsByHand = new Map<number, ActionLogRow[]>();
+  for (const row of rows) {
+    const bucket = rowsByHand.get(row.handNumber);
+    if (bucket === undefined) {
+      rowsByHand.set(row.handNumber, [row]);
+    } else {
+      bucket.push(row);
+    }
+  }
+  const handNumbers = [...rowsByHand.keys()].sort((a, b) => a - b);
+
+  let matchPoints: SeatTotals = [0, 0, 0, 0];
+  let lastState: GameState | null = null;
+  let lastHandNumber: number | null = null;
+  let lastPrevailingWind: PrevailingWind | null = null;
+
+  for (const handNumber of handNumbers) {
+    const handRows = rowsByHand.get(handNumber);
+    if (handRows === undefined) {
+      // Unreachable: handNumbers is derived from rowsByHand's own keys.
+      throw new Error(`getMatchSnapshot: internal error grouping rows for game ${gameId} hand ${handNumber}`);
+    }
+    const state = foldActionRows(gameId, handNumber, handRows, rules);
+    lastState = state;
+    lastHandNumber = handNumber;
+    lastPrevailingWind = (handRows[0].payload as StartHandPayload).prevailingWind;
+
+    if (state.phase.type === 'hand-over' && state.phase.result.kind === 'win') {
+      matchPoints = sumPaymentLegs(state.phase.result.legs, matchPoints);
+    }
+  }
+
+  if (lastState === null || lastHandNumber === null || lastPrevailingWind === null) {
+    // Unreachable: rows.length > 0 guarantees at least one hand group above.
+    throw new Error(`getMatchSnapshot: no hands found for game ${gameId} despite a non-empty action log`);
+  }
+
+  const lastSeq = rows[rows.length - 1].seq;
+
+  return { state: lastState, handNumber: lastHandNumber, lastSeq, matchPoints, prevailingWind: lastPrevailingWind };
 }
 
 // --- applyAutoPass -------------------------------------------------------------
@@ -343,10 +446,11 @@ type PrevailingWind = StartHandPayload['prevailingWind'];
  * The prevailing-wind progression, indexed by the number of "dealer
  * completes a full rotation back to seat 0" events that have occurred so
  * far (0 = the game's very first hand, before any rotation completes).
- * East lasts 1 rotation; South/West/North each last 2 rotations; a 7th
- * rotation-completion has nowhere left to go and ends the game.
+ * Per RULES.md §2: a full game (一將) is 4 wind rounds, E → S → W → N, each
+ * lasting exactly 1 rotation; a 4th rotation-completion has nowhere left to
+ * go and ends the game.
  */
-const WIND_PROGRESSION: readonly PrevailingWind[] = ['east', 'south', 'south', 'west', 'west', 'north', 'north'];
+const WIND_PROGRESSION: readonly PrevailingWind[] = ['east', 'south', 'west', 'north'];
 
 async function fetchStartHandPayloads(
   db: Client,

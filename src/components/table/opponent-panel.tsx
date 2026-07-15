@@ -18,8 +18,8 @@ export function OpponentPanel({ player, isCurrentTurn, isDealer }: OpponentPanel
   return (
     <div
       className={cn(
-        'flex flex-col items-center gap-1.5 rounded-lg p-2',
-        isCurrentTurn && 'ring-2 ring-primary',
+        'flex flex-col items-center gap-1.5 rounded-lg border border-primary-hover/70 p-2',
+        isCurrentTurn && 'ring-2 ring-frc-blue-text',
       )}
     >
       <div className="flex items-center gap-1.5">

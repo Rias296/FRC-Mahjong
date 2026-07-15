@@ -15,7 +15,7 @@ import type { Seat } from '../engine/seats';
 import type { Wall } from '../engine/wall';
 import type { PlayerHand, PlayerMeld } from '../engine/actions';
 import { DEFAULT_RULES } from '../engine/rules-config';
-import type { PaymentLeg } from '../engine/scoring';
+import type { PaymentLeg, SeatTotals } from '../engine/scoring';
 
 // --- Test-local tile builder (duplicated per-file convention, see game-state.test.ts) ---
 const WINDS: readonly WindName[] = ['east', 'south', 'west', 'north'];
@@ -103,8 +103,10 @@ const PLAYERS = [
   { seat: 3 as Seat, displayName: 'Dave' },
 ];
 
-function view(state: GameState, viewerSeat: Seat | null, seq = 1) {
-  return toClientView(state, viewerSeat, PLAYERS, 'ABC123', 'in-progress', 3, 'east', seq);
+const SAMPLE_MATCH_POINTS: SeatTotals = [10, -20, 5, 5];
+
+function view(state: GameState, viewerSeat: Seat | null, seq = 1, matchPoints: SeatTotals = SAMPLE_MATCH_POINTS) {
+  return toClientView(state, viewerSeat, PLAYERS, 'ABC123', 'in-progress', 3, 'east', seq, matchPoints);
 }
 
 describe('toClientView: top-level fields', () => {
@@ -130,7 +132,17 @@ describe('toClientView: top-level fields', () => {
 
   it('maps display names by seat and fills a fallback name if missing', () => {
     const state = stateWith({});
-    const result = toClientView(state, null, [{ seat: 0 as Seat, displayName: 'Solo' }], 'X', 'in-progress', 1, null, 1);
+    const result = toClientView(
+      state,
+      null,
+      [{ seat: 0 as Seat, displayName: 'Solo' }],
+      'X',
+      'in-progress',
+      1,
+      null,
+      1,
+      [0, 0, 0, 0],
+    );
     expect(result.players[0].displayName).toBe('Solo');
     expect(result.players[1].displayName).toBe('Seat 1');
   });
@@ -149,6 +161,7 @@ describe('toClientView: top-level fields', () => {
       null,
       null,
       1,
+      [0, 0, 0, 0],
     );
     expect(result.players[0].occupied).toBe(true);
     expect(result.players[1].occupied).toBe(false);
@@ -693,13 +706,13 @@ describe('toClientView: currentTurnSeat/dealerSeat/repeatCount null-handling con
         },
       });
 
-      const finishedView = toClientView(state, null, PLAYERS, 'ABC123', 'finished', 9, 'north', 100);
+      const finishedView = toClientView(state, null, PLAYERS, 'ABC123', 'finished', 9, 'north', 100, [0, 0, 0, 0]);
       expect(finishedView.status).toBe('finished');
       expect(finishedView.currentTurnSeat).toBe(3);
       expect(finishedView.dealerSeat).toBe(1);
       expect(finishedView.repeatCount).toBe(5);
 
-      const inProgressView = toClientView(state, null, PLAYERS, 'ABC123', 'in-progress', 9, 'north', 100);
+      const inProgressView = toClientView(state, null, PLAYERS, 'ABC123', 'in-progress', 9, 'north', 100, [0, 0, 0, 0]);
       expect(inProgressView.currentTurnSeat).toBe(3);
       expect(inProgressView.dealerSeat).toBe(1);
       expect(inProgressView.repeatCount).toBe(5);
@@ -884,5 +897,36 @@ describe('toClientView: phase redaction — hand-over', () => {
       type: 'hand-over',
       result: { kind: 'exhaustive-draw', nextDealerSeat: 2, nextRepeatCount: 1 },
     });
+  });
+});
+
+describe('toClientView: matchPoints — fully public, no redaction', () => {
+  it('assigns each seat its own matchPoints entry, identically across the viewer, every opponent, and a spectator', () => {
+    const state = stateWith({});
+    const matchPoints: SeatTotals = [15, -30, 20, -5];
+
+    for (const viewer of [0, 1, 2, 3, null] as (Seat | null)[]) {
+      const result = view(state, viewer, 1, matchPoints);
+      expect(result.players.map((p) => p.matchPoints)).toEqual([15, -30, 20, -5]);
+    }
+  });
+
+  it('never gates matchPoints on isViewer/occupied the way concealedTiles/barredVisible are gated', () => {
+    const state = stateWith({});
+    const matchPoints: SeatTotals = [7, -7, 3, -3];
+
+    const asViewer = view(state, 0 as Seat, 1, matchPoints);
+    const asOpponent = view(state, 1 as Seat, 1, matchPoints);
+    const asSpectator = view(state, null, 1, matchPoints);
+
+    // Seat 0's matchPoints value is identical no matter who is looking,
+    // unlike seat 0's concealedTiles (real for the viewer, null otherwise).
+    expect(asViewer.players[0].matchPoints).toBe(7);
+    expect(asOpponent.players[0].matchPoints).toBe(7);
+    expect(asSpectator.players[0].matchPoints).toBe(7);
+
+    expect(asViewer.players[0].concealedTiles).not.toBeNull();
+    expect(asOpponent.players[0].concealedTiles).toBeNull();
+    expect(asSpectator.players[0].concealedTiles).toBeNull();
   });
 });

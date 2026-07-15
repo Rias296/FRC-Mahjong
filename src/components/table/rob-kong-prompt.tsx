@@ -27,7 +27,7 @@ export function RobKongPrompt({
   if (state === 'choose') {
     return (
       <div
-        className="glass fixed right-4 bottom-4 left-4 z-30 flex flex-col items-center gap-3 rounded-xl p-4 shadow-lg sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2"
+        className="panel fixed right-4 bottom-4 left-4 z-30 flex flex-col items-center gap-3 rounded-xl p-4 shadow-lg sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2"
         role="group"
         aria-label={TABLE_STRINGS.robKongPromptLabel}
       >
@@ -37,7 +37,7 @@ export function RobKongPrompt({
             variant="default"
             disabled={pending}
             onClick={onRob}
-            className={cn(TOUCH_TARGET_CLASS, 'bg-accent text-accent-foreground hover:bg-accent/90')}
+            className={cn(TOUCH_TARGET_CLASS, 'bg-lacquer-red text-foreground hover:bg-lacquer-red/90')}
           >
             {actionLabel('rob')}
           </Button>
@@ -54,7 +54,7 @@ export function RobKongPrompt({
 
   return (
     <div
-      className="glass fixed right-4 bottom-4 left-4 z-30 flex flex-col items-center gap-2 rounded-xl p-4 shadow-lg sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2"
+      className="panel fixed right-4 bottom-4 left-4 z-30 flex flex-col items-center gap-2 rounded-xl p-4 shadow-lg sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2"
       role="status"
       aria-live="polite"
     >

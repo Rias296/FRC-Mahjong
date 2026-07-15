@@ -3,9 +3,17 @@ import { describe, expect, it } from 'vitest';
 import { runMigrations } from './migrations';
 import { createGame, joinGame } from './games';
 import { appendAction, appendStartHand, getLatestSeq, listActionsForHand, type StartHandPayload } from './actions-log';
-import { advanceToNextHand, applyAutoPass, getCurrentHandState, replayHand, submitAction } from './replay';
+import {
+  advanceToNextHand,
+  applyAutoPass,
+  getCurrentHandState,
+  getMatchSnapshot,
+  replayHand,
+  submitAction,
+} from './replay';
 import { applyAction, isRuleError, startHand, type GameState, type RuleError } from '../engine/game-state';
 import { DEFAULT_RULES, type RulesConfig } from '../engine/rules-config';
+import { sumPaymentLegs } from '../engine/scoring';
 import { canChow, canKongFromDiscard, canPung } from '../engine/actions';
 import { canWin } from '../engine/hand';
 import { SEATS, type Seat } from '../engine/seats';
@@ -349,16 +357,18 @@ describe('advanceToNextHand', () => {
     const rules: RulesConfig = { ...HIGH_RESERVE_RULES, dealerRepeatsOnDraw: false };
     await seedGameRow(db, 'gFinish', rules);
 
-    // Synthetic dealer history for hands 1-27: dealerSeat = (h-1) % 4, giving
-    // exactly 6 "returns to seat 0" transitions by hand 25 (at hands 5, 9,
-    // 13, 17, 21, 25), with none added by hands 26-27.
-    for (let h = 1; h <= 27; h++) {
+    // Synthetic dealer history for hands 1-15: dealerSeat = (h-1) % 4, giving
+    // exactly 3 "returns to seat 0" transitions by hand 13 (at hands 5, 9,
+    // 13 — completing the East, South, and West rounds), with none added by
+    // hands 14-15.
+    for (let h = 1; h <= 15; h++) {
       await seedDummyStartHand(db, 'gFinish', h, ((h - 1) % 4) as Seat);
     }
-    // Hand 28 is the real current hand: dealer 3 (consistent with the (h-1)%4
+    // Hand 16 is the real current hand: dealer 3 (consistent with the (h-1)%4
     // pattern), instantly exhausts. Advancing from here rotates the dealer
-    // back to seat 0 for the 7th time, exhausting the wind progression.
-    await appendStartHand(db, 'gFinish', { handNumber: 28, dealerSeat: 3, seed: 11, repeatCount: 0, prevailingWind: 'north' });
+    // back to seat 0 for the 4th time, exhausting the wind progression
+    // (E -> S -> W -> N, per RULES.md §2 — the corrected 4-rotation length).
+    await appendStartHand(db, 'gFinish', { handNumber: 16, dealerSeat: 3, seed: 11, repeatCount: 0, prevailingWind: 'north' });
 
     const result = await advanceToNextHand(db, 'gFinish');
     expect(result).toEqual({ error: 'game-finished' });
@@ -366,7 +376,93 @@ describe('advanceToNextHand', () => {
     const gameRow = await db.execute({ sql: 'SELECT status FROM games WHERE id = ?', args: ['gFinish'] });
     expect(String(gameRow.rows[0].status)).toBe('finished');
 
-    const rows29 = await listActionsForHand(db, 'gFinish', 29);
-    expect(rows29.length).toBe(0); // no hand 29 was started
+    const rows17 = await listActionsForHand(db, 'gFinish', 17);
+    expect(rows17.length).toBe(0); // no hand 17 was started
+  });
+});
+
+describe('getMatchSnapshot', () => {
+  it('returns null for a game with no actions', async () => {
+    const db = await freshDb();
+    await seedGameRow(db, 'gMatchEmpty');
+    expect(await getMatchSnapshot(db, 'gMatchEmpty')).toBeNull();
+  });
+
+  it(
+    'returns zero matchPoints for a single in-progress hand, and its state/lastSeq match ' +
+      'getCurrentHandState for the same game',
+    async () => {
+      const db = await freshDb();
+      const gameId = 'gMatchInProgress';
+      await seedGameRow(db, gameId);
+      await appendStartHand(db, gameId, { handNumber: 1, dealerSeat: 0, seed: 42, repeatCount: 0, prevailingWind: 'east' });
+
+      const snapshot = await getMatchSnapshot(db, gameId);
+      const current = await getCurrentHandState(db, gameId);
+      if (snapshot === null || current === null) {
+        throw new Error('expected both getMatchSnapshot and getCurrentHandState to be non-null');
+      }
+
+      expect(snapshot.matchPoints).toEqual([0, 0, 0, 0]);
+      expect(snapshot.state).toEqual(current.state);
+      expect(snapshot.handNumber).toBe(current.handNumber);
+      expect(snapshot.lastSeq).toBe(current.lastSeq);
+      expect(snapshot.prevailingWind).toBe('east');
+    },
+  );
+
+  it("sums a completed won hand's legs into matchPoints after advancing to the next hand", async () => {
+    const db = await freshDb();
+    const gameId = 'gMatchWin';
+    await seedGameRow(db, gameId);
+    // Reuses the known seed-44703/dealer-0 fixture from auto-pass-mixed.test.ts:
+    // discarding 'tiao-7-4' leaves seat 2 with a real hu option; seat 1 passes
+    // its pung option, seat 2 claims hu, producing a real win result.
+    await appendStartHand(db, gameId, { handNumber: 1, dealerSeat: 0, seed: 44703, repeatCount: 0, prevailingWind: 'east' });
+
+    const discard = await submitAction(db, gameId, { type: 'discard', seat: 0, tileId: 'tiao-7-4' });
+    if (isSubmitRuleError(discard)) throw new Error(`unexpected rule error: ${discard.message}`);
+    const pass1 = await submitAction(db, gameId, { type: 'pass', seat: 1 });
+    if (isSubmitRuleError(pass1)) throw new Error(`unexpected rule error: ${pass1.message}`);
+    const win = await submitAction(db, gameId, { type: 'claim', seat: 2, claim: { type: 'hu' } });
+    if (isSubmitRuleError(win)) throw new Error(`unexpected rule error: ${win.message}`);
+    if (win.state.phase.type !== 'hand-over' || win.state.phase.result.kind !== 'win') {
+      throw new Error('test fixture assumption broken: expected a win result');
+    }
+    const expectedTotals = sumPaymentLegs(win.state.phase.result.legs);
+
+    const advanced = await advanceToNextHand(db, gameId);
+    if ('error' in advanced) throw new Error(`unexpected error: ${advanced.error}`);
+
+    const snapshot = await getMatchSnapshot(db, gameId);
+    if (snapshot === null) throw new Error('expected a non-null snapshot');
+    expect(snapshot.matchPoints).toEqual(expectedTotals);
+    expect(snapshot.handNumber).toBe(2);
+  });
+
+  it('leaves matchPoints unchanged across an exhaustive-draw hand', async () => {
+    const db = await freshDb();
+    const gameId = 'gMatchDraw';
+    await seedGameRow(db, gameId, HIGH_RESERVE_RULES);
+    await appendStartHand(db, gameId, { handNumber: 1, dealerSeat: 0, seed: 5, repeatCount: 0, prevailingWind: 'east' });
+
+    const advanced = await advanceToNextHand(db, gameId);
+    if ('error' in advanced) throw new Error(`unexpected error: ${advanced.error}`);
+
+    const snapshot = await getMatchSnapshot(db, gameId);
+    if (snapshot === null) throw new Error('expected a non-null snapshot');
+    expect(snapshot.matchPoints).toEqual([0, 0, 0, 0]);
+    expect(snapshot.handNumber).toBe(2);
+  });
+
+  it("derives prevailingWind correctly from the current hand's start-hand payload", async () => {
+    const db = await freshDb();
+    const gameId = 'gMatchWind';
+    await seedGameRow(db, gameId);
+    await appendStartHand(db, gameId, { handNumber: 1, dealerSeat: 0, seed: 42, repeatCount: 0, prevailingWind: 'south' });
+
+    const snapshot = await getMatchSnapshot(db, gameId);
+    if (snapshot === null) throw new Error('expected a non-null snapshot');
+    expect(snapshot.prevailingWind).toBe('south');
   });
 });

@@ -313,7 +313,7 @@ export function GameTable({ view, connected, code, playerToken, onViewUpdate, on
       )}
 
       {selectionMode === 'chow-select' && (
-        <div className="glass fixed right-4 bottom-4 left-4 z-30 flex flex-col items-center gap-2 rounded-xl p-3 shadow-lg sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2">
+        <div className="panel fixed right-4 bottom-4 left-4 z-30 flex flex-col items-center gap-2 rounded-xl p-3 shadow-lg sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2">
           <p className="text-xs text-muted-foreground">{TABLE_STRINGS.chowSelectPrompt}</p>
           <div className="flex items-center gap-2">
             <Button

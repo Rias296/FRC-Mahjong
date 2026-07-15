@@ -154,7 +154,7 @@ export function RoomClient({ code }: RoomClientProps): React.JSX.Element {
   if (mode === 'need-join') {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4 py-12">
-        <Card className="glass w-full max-w-md">
+        <Card className="panel w-full max-w-md">
           <CardHeader>
             <CardTitle>{LOBBY_STRINGS.joinThisMatchHeading}</CardTitle>
           </CardHeader>

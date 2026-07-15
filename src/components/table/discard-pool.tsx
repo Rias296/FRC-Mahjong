@@ -30,7 +30,7 @@ export function DiscardPool({ view }: DiscardPoolProps): React.JSX.Element {
   const pendingDiscard = view.phase?.type === 'awaiting-claims' ? (view.phase.discardedTile ?? null) : null;
 
   return (
-    <div className="flex w-full flex-col items-center justify-center gap-3 p-2">
+    <div className="bg-jade/15 flex w-full flex-col items-center justify-center gap-3 rounded-xl p-2">
       {/* Tablet+: spatial grid quadrants matching each seat's table position. */}
       <div className="hidden aspect-square w-full max-w-sm grid-cols-3 grid-rows-3 place-items-center md:grid">
         {view.players.map((player) => (

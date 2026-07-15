@@ -1,23 +1,24 @@
 import type { Metadata } from "next";
-import { Russo_One, Chakra_Petch, Geist_Mono } from "next/font/google";
+import { Noto_Serif_TC, Noto_Sans_TC, VT323 } from "next/font/google";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
-const russoOne = Russo_One({
+const notoSerifTC = Noto_Serif_TC({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-noto-serif-tc",
+});
+
+const notoSansTC = Noto_Sans_TC({
+  subsets: ["latin"],
+  weight: ["300", "400", "500", "700"],
+  variable: "--font-noto-sans-tc",
+});
+
+const vt323 = VT323({
+  subsets: ["latin"],
   weight: "400",
-  variable: "--font-russo-one",
-  subsets: ["latin"],
-});
-
-const chakraPetch = Chakra_Petch({
-  weight: ["300", "400", "500", "600", "700"],
-  variable: "--font-chakra-petch",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  variable: "--font-vt323",
 });
 
 export const metadata: Metadata = {
@@ -33,7 +34,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${russoOne.variable} ${chakraPetch.variable} ${geistMono.variable} dark h-full antialiased`}
+      className={`${notoSerifTC.variable} ${notoSansTC.variable} ${vt323.variable} dark h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
         {children}

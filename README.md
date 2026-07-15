@@ -6,6 +6,10 @@ A Taiwanese (16-tile) mahjong web app with an FRC-robotics-themed skin. Realtime
 - **Server** (`src/server/`, `src/app/api/`) — event-sourced persistence on Turso (libSQL): every game is an append-only action log; `GameState` is never stored, only replayed. SSE realtime.
 - **UI** (`src/app/`, `src/components/`) — Next.js App Router, shadcn/ui, Tailwind v4.
 
+## ⚠ Tile art licensing — unconfirmed
+
+The pixel-art tile sprites in `public/tiles/` were sourced manually and their license/attribution is **unconfirmed**. They render in every game view. **Do not deploy publicly until this is resolved** — confirm the source/license, or swap in a verified-license alternative. Details and a fallback shortlist are in `docs/ASSETS.md` (ask the project owner for a copy if you don't have the docs vault).
+
 ## Setup
 
 1. Install dependencies:

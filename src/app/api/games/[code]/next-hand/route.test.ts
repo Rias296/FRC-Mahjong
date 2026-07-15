@@ -3,9 +3,18 @@ import type { Client } from '@libsql/client';
 import { getDb } from '@/server/db';
 import { runMigrations } from '@/server/migrations';
 import { createGame, joinGame } from '@/server/games';
+import { appendStartHand } from '@/server/actions-log';
+import { submitAction } from '@/server/replay';
+import type { GameState, RuleError } from '@/engine/game-state';
 import type { ClientGameView } from '@/lib/protocol';
 import type { RulesConfig } from '@/engine/rules-config';
 import { POST } from './route';
+
+function isSubmitRuleError(
+  r: { readonly state: GameState; readonly handNumber: number } | RuleError,
+): r is RuleError {
+  return 'type' in r && r.type === 'rule-error';
+}
 
 /** See src/app/api/games/route.test.ts for why this singleton-routing setup is safe/isolated. */
 let db: Client;
@@ -28,6 +37,7 @@ function callNextHand(code: string, token: string | null): Promise<Response> {
 }
 
 async function fullyJoinedGame(rulesOverride?: Partial<RulesConfig>): Promise<{
+  gameId: string;
   roomCode: string;
   tokens: readonly [string, string, string, string];
 }> {
@@ -38,7 +48,11 @@ async function fullyJoinedGame(rulesOverride?: Partial<RulesConfig>): Promise<{
   if ('error' in j2 || 'error' in j3 || 'error' in j4) {
     throw new Error('unexpected join error setting up fixture');
   }
-  return { roomCode: created.roomCode, tokens: [created.playerToken, j2.playerToken, j3.playerToken, j4.playerToken] };
+  return {
+    gameId: created.gameId,
+    roomCode: created.roomCode,
+    tokens: [created.playerToken, j2.playerToken, j3.playerToken, j4.playerToken],
+  };
 }
 
 function callNextHandRawAuth(code: string, authHeaderValue: string | undefined): Promise<Response> {
@@ -129,5 +143,40 @@ describe('POST /api/games/[code]/next-hand', () => {
     expect(view.status).toBe('in-progress');
     expect(view.viewerSeat).toBe(1);
     expect(view.roomCode).toBe(roomCode);
+    // Hand 1 was an exhaustive draw (no winner), so it contributed no
+    // payment legs — every seat's match-points total is still zero going
+    // into hand 2.
+    for (const player of view.players) {
+      expect(player.matchPoints).toBe(0);
+    }
+  });
+
+  it("carries a completed win's payment legs forward as matchPoints once advanced to the next hand", async () => {
+    const { gameId, roomCode, tokens } = await fullyJoinedGame();
+
+    // Reuses the known seed-44703/dealer-0 fixture (see auto-pass-mixed.test.ts):
+    // discarding 'tiao-7-4' leaves seat 2 with a real hu option.
+    await db.execute({ sql: 'DELETE FROM actions WHERE game_id = ?', args: [gameId] });
+    await appendStartHand(db, gameId, { handNumber: 1, dealerSeat: 0, seed: 44703, repeatCount: 0, prevailingWind: 'east' });
+
+    const discard = await submitAction(db, gameId, { type: 'discard', seat: 0, tileId: 'tiao-7-4' });
+    if (isSubmitRuleError(discard)) throw new Error(`unexpected rule error: ${discard.message}`);
+    const pass1 = await submitAction(db, gameId, { type: 'pass', seat: 1 });
+    if (isSubmitRuleError(pass1)) throw new Error(`unexpected rule error: ${pass1.message}`);
+    const win = await submitAction(db, gameId, { type: 'claim', seat: 2, claim: { type: 'hu' } });
+    if (isSubmitRuleError(win)) throw new Error(`unexpected rule error: ${win.message}`);
+    if (win.state.phase.type !== 'hand-over' || win.state.phase.result.kind !== 'win') {
+      throw new Error('test fixture assumption broken: expected a win result');
+    }
+    const winnerSeat = win.state.phase.result.winners[0].seat;
+    const winnerLeg = win.state.phase.result.legs.find((leg) => leg.payeeSeat === winnerSeat);
+    if (winnerLeg === undefined) throw new Error('test fixture assumption broken: no leg for the winner');
+
+    const response = await callNextHand(roomCode, tokens[0]);
+    expect(response.status).toBe(200);
+    const view = (await response.json()) as ClientGameView;
+    expect(view.handNumber).toBe(2);
+    expect(view.players[winnerSeat].matchPoints).toBe(winnerLeg.amount);
+    expect(view.players[winnerLeg.payerSeat].matchPoints).toBe(-winnerLeg.amount);
   });
 });

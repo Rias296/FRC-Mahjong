@@ -37,7 +37,7 @@ export function WaitingRoom({ view, viewerSeat }: WaitingRoomProps): React.JSX.E
   return (
     <div className="flex w-full max-w-md flex-col gap-6">
       <h1 className="text-center font-display text-2xl text-foreground">{LOBBY_STRINGS.matchStagingHeading}</h1>
-      <Card className="glass">
+      <Card className="panel">
         <CardHeader className="items-center text-center">
           <CardTitle className="text-sm text-muted-foreground">{LOBBY_STRINGS.roomCodeLabel}</CardTitle>
           <div className="flex items-center gap-3">
@@ -61,7 +61,7 @@ export function WaitingRoom({ view, viewerSeat }: WaitingRoomProps): React.JSX.E
           return (
             <Card
               key={seat}
-              className={cn('glass', isViewerSeat && 'ring-2 ring-primary')}
+              className={cn('panel', isViewerSeat && 'ring-2 ring-frc-blue-text')}
             >
               <CardContent className="flex items-center justify-between gap-2">
                 <div className="flex flex-col gap-0.5">

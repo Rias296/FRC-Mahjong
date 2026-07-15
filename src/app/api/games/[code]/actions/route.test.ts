@@ -4,6 +4,7 @@ import { getDb } from '@/server/db';
 import { runMigrations } from '@/server/migrations';
 import { createGame, joinGame } from '@/server/games';
 import { getCurrentHandState } from '@/server/replay';
+import { appendStartHand } from '@/server/actions-log';
 import type { ClientGameView, SubmitActionResponse } from '@/lib/protocol';
 import type { Seat } from '@/engine/seats';
 import { POST } from './route';
@@ -183,5 +184,39 @@ describe('POST /api/games/[code]/actions', () => {
     // After a discard, control passes to the claim window (or straight to
     // the next player if nobody has any legal claim).
     expect(['awaiting-claims', 'awaiting-draw']).toContain(view.phase?.type);
+    // Hand 1 hasn't finished yet, so every seat's match-points total is
+    // still zero.
+    for (const player of view.players) {
+      expect(player.matchPoints).toBe(0);
+    }
+  });
+
+  it("reflects a completed win's payment legs in matchPoints, computed from a single self-consistent snapshot", async () => {
+    const { gameId, roomCode, tokens } = await fullyJoinedGame();
+
+    // Reuses the known seed-44703/dealer-0 fixture (see auto-pass-mixed.test.ts):
+    // discarding 'tiao-7-4' leaves seat 2 with a real hu option.
+    await db.execute({ sql: 'DELETE FROM actions WHERE game_id = ?', args: [gameId] });
+    await appendStartHand(db, gameId, { handNumber: 1, dealerSeat: 0, seed: 44703, repeatCount: 0, prevailingWind: 'east' });
+
+    const discardResponse = await callActions(roomCode, tokens[0], { type: 'discard', seat: 0, tileId: 'tiao-7-4' });
+    expect(discardResponse.status).toBe(200);
+    const passResponse = await callActions(roomCode, tokens[1], { type: 'pass', seat: 1 });
+    expect(passResponse.status).toBe(200);
+    const winResponse = await callActions(roomCode, tokens[2], { type: 'claim', seat: 2, claim: { type: 'hu' } });
+    expect(winResponse.status).toBe(200);
+
+    const winBody = (await winResponse.json()) as SubmitActionResponse;
+    const winView = winBody.view;
+    const winPhase = winView.phase;
+    if (winPhase?.type !== 'hand-over' || winPhase.result === undefined || winPhase.result.kind !== 'win') {
+      throw new Error('test fixture assumption broken: expected a win result');
+    }
+    const winnerSeat = winPhase.result.winners[0].seat;
+    const winnerLeg = winPhase.result.legs.find((leg) => leg.payeeSeat === winnerSeat);
+    if (winnerLeg === undefined) throw new Error('test fixture assumption broken: no leg for the winner');
+
+    expect(winView.players[winnerSeat].matchPoints).toBe(winnerLeg.amount);
+    expect(winView.players[winnerLeg.payerSeat].matchPoints).toBe(-winnerLeg.amount);
   });
 });

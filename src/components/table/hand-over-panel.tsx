@@ -37,10 +37,11 @@ export function HandOverPanel({
   return (
     <div
       className={cn(
-        'fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm',
+        'fixed inset-0 z-50 flex items-center justify-center bg-background/85 p-4',
+        !isMatchComplete && result.kind === 'win' && 'animate-buzzer-edge-flash',
       )}
     >
-      <div className="glass flex w-full max-w-md flex-col items-center gap-4 rounded-xl p-6 text-center">
+      <div className="panel border-accent! flex w-full max-w-md flex-col items-center gap-4 rounded-xl p-6 text-center">
         {isMatchComplete && (
           <h2 className="font-display text-2xl text-accent">{statusLabel('finished')}</h2>
         )}

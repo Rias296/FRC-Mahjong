@@ -14,7 +14,7 @@ export function StatusStrip({ view, connected }: StatusStripProps): React.JSX.El
   const dealerPlayer = view.players.find((p) => p.seat === view.dealerSeat) ?? null;
 
   return (
-    <div className="glass flex w-full flex-wrap items-center justify-center gap-x-4 gap-y-1 rounded-lg px-4 py-2 text-sm">
+    <div className="panel flex w-full flex-wrap items-center justify-center gap-x-4 gap-y-1 rounded-lg px-4 py-2 text-sm">
       <span className="font-medium text-foreground">
         {view.handNumber !== null ? `${TABLE_STRINGS.handLabel} ${view.handNumber}` : statusLabel(view.status)}
       </span>

@@ -181,3 +181,25 @@ export function computePaymentLegs(params: {
 
   return legs;
 }
+
+/** Per-seat running match-points totals, indexed by Seat (0=East .. 3=North). */
+export type SeatTotals = readonly [number, number, number, number];
+
+const ZERO_SEAT_TOTALS: SeatTotals = [0, 0, 0, 0];
+
+/**
+ * Folds a list of payment legs into per-seat running totals: each leg's
+ * `payeeSeat` gains `amount`, each leg's `payerSeat` loses `amount`. Starts
+ * from `initial` (default all zeros), so callers can fold a match hand by
+ * hand without re-summing from scratch. Since every leg only moves points
+ * between two seats (never creates or destroys them), the result is always
+ * zero-sum relative to `initial` — i.e. `sum(result) === sum(initial)`.
+ */
+export function sumPaymentLegs(legs: readonly PaymentLeg[], initial: SeatTotals = ZERO_SEAT_TOTALS): SeatTotals {
+  const totals: [number, number, number, number] = [...initial];
+  for (const leg of legs) {
+    totals[leg.payeeSeat] += leg.amount;
+    totals[leg.payerSeat] -= leg.amount;
+  }
+  return totals;
+}

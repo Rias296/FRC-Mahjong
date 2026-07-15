@@ -46,6 +46,15 @@ export interface ClientPlayerView {
   readonly discards: readonly ClientTile[];
   /** The viewer's OWN barred flag if isViewer, else null (never leak opponents' bar state). */
   readonly barredVisible: boolean | null;
+  /**
+   * Server-derived running match-points total for this seat: the sum of every
+   * completed hand's payment legs in the current match so far (see
+   * src/engine/scoring.ts's `sumPaymentLegs`). Fully public — payment legs
+   * are already exposed unredacted via `ClientPhaseView.result` on every
+   * hand-over, so this aggregate carries zero additional leak surface and is
+   * identical across viewer/opponent/spectator views.
+   */
+  readonly matchPoints: number;
 }
 
 /**

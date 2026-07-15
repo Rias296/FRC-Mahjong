@@ -7,8 +7,7 @@
 
 import { getDb } from '@/server/db';
 import { getGameByRoomCode, listPlayers, resolvePlayerToken } from '@/server/games';
-import { advanceToNextHand, type AdvanceToNextHandResult } from '@/server/replay';
-import { getStartHandPayload } from '@/server/actions-log';
+import { advanceToNextHand, getMatchSnapshot, type AdvanceToNextHandResult } from '@/server/replay';
 import { toClientView } from '@/server/views';
 
 /** Duplicated per-route-file convention (see src/engine/*.test.ts). */
@@ -63,29 +62,44 @@ export async function POST(
   }
 
   const viewerSeat = resolved.seat;
-  // Both prevailingWind and seq are derived without a second, independent
-  // "what's the latest state of the world" query: prevailingWind is a
-  // single indexed row lookup for the SPECIFIC hand result.state already
-  // reflects, and seq comes straight from advanceToNextHand's own return
-  // value (the exact same read that produced result.state) rather than a
-  // separate getLatestSeq call that could race against a concurrent writer.
-  const prevailingWind = (await getStartHandPayload(db, game.gameId, result.handNumber)).prevailingWind;
+
+  // The response is built from a single getMatchSnapshot read taken AFTER
+  // advanceToNextHand's write already landed, rather than from its own
+  // returned state/handNumber/lastSeq plus a separate prevailingWind lookup:
+  // every field in the response comes from this ONE snapshot (see
+  // docs/DECISIONS.md's "seq can outrun view content" entries). A snapshot
+  // taken right after a successful append is guaranteed to include that
+  // append (the action log is append-only/monotonic), so this is safe, not a
+  // race — and it additionally gives us matchPoints, which
+  // advanceToNextHand's own return value deliberately does not compute (see
+  // getMatchSnapshot's doc comment on why it's kept out of the write path).
+  const snapshot = await getMatchSnapshot(db, game.gameId);
+  if (snapshot === null) {
+    // Unreachable in practice: advanceToNextHand just succeeded, which
+    // requires the new hand's start-hand row (and therefore at least one
+    // action row) to exist.
+    return Response.json(
+      { error: { type: 'internal-error', message: 'An unexpected error occurred' } },
+      { status: 500 },
+    );
+  }
+
   const players = await listPlayers(db, game.gameId);
-  const seq = result.lastSeq;
 
   // advanceToNextHand's success case (a real next hand actually started)
   // only ever occurs while the game is still in-progress: the 'game-finished'
   // outcome above is a distinct error branch, never bundled with a success
   // result, so the status here is always 'in-progress'.
   const view = toClientView(
-    result.state,
+    snapshot.state,
     viewerSeat,
     players,
     code,
     'in-progress',
-    result.handNumber,
-    prevailingWind,
-    seq,
+    snapshot.handNumber,
+    snapshot.prevailingWind,
+    snapshot.lastSeq,
+    snapshot.matchPoints,
   );
 
   return Response.json(view, { status: 200 });

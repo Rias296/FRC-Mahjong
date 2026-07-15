@@ -4,9 +4,12 @@ import {
   computeHandTai,
   computePaymentLegs,
   meetsMinimumTai,
+  sumPaymentLegs,
   TAI_EVALUATORS,
   TAI_SLOT_IDS,
+  type PaymentLeg,
   type ScoringContext,
+  type SeatTotals,
   type TaiSlotId,
   type WinType,
 } from './scoring';
@@ -341,5 +344,65 @@ describe('computePaymentLegs — validation', () => {
       rules: DEFAULT_RULES,
     });
     expect(payerSeats).toEqual(original);
+  });
+});
+
+describe('sumPaymentLegs', () => {
+  it('returns all zeros for an empty leg list', () => {
+    expect(sumPaymentLegs([])).toEqual([0, 0, 0, 0]);
+  });
+
+  it('credits the payee and debits the payer for a single discard leg', () => {
+    const legs: PaymentLeg[] = [{ payerSeat: 2, payeeSeat: 1, amount: 10 }];
+    expect(sumPaymentLegs(legs)).toEqual([0, 10, -10, 0]);
+  });
+
+  it('sums three self-draw legs into one winner gain and three payer losses', () => {
+    const legs: PaymentLeg[] = [
+      { payerSeat: 1, payeeSeat: 0, amount: 8 },
+      { payerSeat: 2, payeeSeat: 0, amount: 8 },
+      { payerSeat: 3, payeeSeat: 0, amount: 8 },
+    ];
+    expect(sumPaymentLegs(legs)).toEqual([24, -8, -8, -8]);
+  });
+
+  it("folds multiple winners' legs against a single discarder", () => {
+    // A multipleWinners (一炮多響) scenario: seats 1 and 2 both win off seat 0's discard.
+    const legs: PaymentLeg[] = [
+      { payerSeat: 0, payeeSeat: 1, amount: 6 },
+      { payerSeat: 0, payeeSeat: 2, amount: 9 },
+    ];
+    expect(sumPaymentLegs(legs)).toEqual([-15, 6, 9, 0]);
+  });
+
+  it('accumulates on top of a non-zero initial SeatTotals', () => {
+    const initial: SeatTotals = [5, -5, 10, -10];
+    const legs: PaymentLeg[] = [{ payerSeat: 2, payeeSeat: 3, amount: 4 }];
+    expect(sumPaymentLegs(legs, initial)).toEqual([5, -5, 6, -6]);
+  });
+
+  it('totals always sum to zero across arbitrary leg sets', () => {
+    const legSets: readonly (readonly PaymentLeg[])[] = [
+      [],
+      [{ payerSeat: 0, payeeSeat: 1, amount: 1 }],
+      [
+        { payerSeat: 1, payeeSeat: 0, amount: 8 },
+        { payerSeat: 2, payeeSeat: 0, amount: 8 },
+        { payerSeat: 3, payeeSeat: 0, amount: 8 },
+      ],
+      [
+        { payerSeat: 0, payeeSeat: 1, amount: 6 },
+        { payerSeat: 0, payeeSeat: 2, amount: 9 },
+        { payerSeat: 3, payeeSeat: 2, amount: 2 },
+      ],
+      [
+        { payerSeat: 3, payeeSeat: 1, amount: 7 },
+        { payerSeat: 2, payeeSeat: 0, amount: 3 },
+      ],
+    ];
+    for (const legs of legSets) {
+      const totals = sumPaymentLegs(legs);
+      expect(totals.reduce((a, b) => a + b, 0)).toBe(0);
+    }
   });
 });

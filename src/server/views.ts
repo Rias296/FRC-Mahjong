@@ -14,6 +14,7 @@
 
 import type { GameState, Phase } from '../engine/game-state';
 import type { PlayerMeld } from '../engine/actions';
+import type { SeatTotals } from '../engine/scoring';
 import { SEATS, type Seat } from '../engine/seats';
 import type { Tile, TileKind } from '../engine/tiles';
 import { remaining } from '../engine/wall';
@@ -65,6 +66,7 @@ function redactPlayer(
   viewerSeat: Seat | null,
   displayName: string,
   occupied: boolean,
+  matchPoints: SeatTotals,
 ): ClientPlayerView {
   const player = state.players[seat];
   const isViewer = seat === viewerSeat;
@@ -80,6 +82,9 @@ function redactPlayer(
     flowers: player.flowers.map(toClientTile),
     discards: player.discards.map(toClientTile),
     barredVisible: isViewer ? player.barred : null,
+    // Public for every viewer (see ClientPlayerView's field doc) — never
+    // gated on isViewer/occupied, unlike the hand-content fields above.
+    matchPoints: matchPoints[seat],
   };
 }
 
@@ -164,11 +169,12 @@ export function toClientView(
   handNumber: number | null,
   prevailingWind: PrevailingWind | null,
   seq: number,
+  matchPoints: SeatTotals,
 ): ClientGameView {
   const nameBySeat = new Map(players.map((p) => [p.seat, p.displayName]));
 
   const clientPlayers: ClientPlayerView[] = SEATS.map((seat) =>
-    redactPlayer(state, seat, viewerSeat, nameBySeat.get(seat) ?? `Seat ${seat}`, nameBySeat.has(seat)),
+    redactPlayer(state, seat, viewerSeat, nameBySeat.get(seat) ?? `Seat ${seat}`, nameBySeat.has(seat), matchPoints),
   );
 
   return {

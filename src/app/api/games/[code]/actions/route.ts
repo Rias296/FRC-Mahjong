@@ -8,8 +8,7 @@
 
 import { getDb } from '@/server/db';
 import { getGameByRoomCode, listPlayers, resolvePlayerToken } from '@/server/games';
-import { submitAction } from '@/server/replay';
-import { getStartHandPayload } from '@/server/actions-log';
+import { getMatchSnapshot, submitAction } from '@/server/replay';
 import type { GameAction, GameState, RuleError } from '@/engine/game-state';
 import { toClientView } from '@/server/views';
 import { isValidGameAction, type SubmitActionResponse } from '@/lib/protocol';
@@ -115,27 +114,41 @@ export async function POST(
     return Response.json({ error: result }, { status: 409 });
   }
 
-  // seq is taken from submitAction's own return value (the exact same
-  // replay that produced result.state), never a separate getLatestSeq
-  // query — a second independent read here could observe a concurrent
-  // writer's seq while returning content from an earlier read, leaving the
-  // client's declared cursor ahead of what it actually received.
-  const seq = result.lastSeq;
-  const prevailingWind = (await getStartHandPayload(db, game.gameId, result.handNumber)).prevailingWind;
+  // The response is built from a single getMatchSnapshot read taken AFTER
+  // submitAction's write already landed, rather than from submitAction's own
+  // returned state/handNumber/lastSeq plus a separate prevailingWind lookup:
+  // this is the "every field from ONE snapshot" consistency rule (see
+  // docs/DECISIONS.md's "seq can outrun view content" entries). A snapshot
+  // taken right after a successful append is guaranteed to include that
+  // append (the action log is append-only/monotonic), so this is safe, not a
+  // race — and it additionally gives us matchPoints, which submitAction's
+  // own return value deliberately does not compute (see getMatchSnapshot's
+  // doc comment on why it's kept out of the write path).
+  const snapshot = await getMatchSnapshot(db, game.gameId);
+  if (snapshot === null) {
+    // Unreachable in practice: submitAction just succeeded, which requires
+    // an active hand (and therefore at least one action row) to exist.
+    return Response.json(
+      { error: { type: 'internal-error', message: 'An unexpected error occurred' } },
+      { status: 500 },
+    );
+  }
+
   const players = await listPlayers(db, game.gameId);
   const status = game.status as 'waiting-for-players' | 'in-progress' | 'finished';
 
   const view = toClientView(
-    result.state,
+    snapshot.state,
     viewerSeat,
     players,
     code,
     status,
-    result.handNumber,
-    prevailingWind,
-    seq,
+    snapshot.handNumber,
+    snapshot.prevailingWind,
+    snapshot.lastSeq,
+    snapshot.matchPoints,
   );
 
-  const response: SubmitActionResponse = { seq, view };
+  const response: SubmitActionResponse = { seq: snapshot.lastSeq, view };
   return Response.json(response, { status: 200 });
 }

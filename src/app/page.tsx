@@ -78,16 +78,16 @@ export default function Home(): React.JSX.Element {
       </div>
 
       {resumeSession !== null && (
-        <div className="glass w-full max-w-md rounded-xl px-4 py-3 text-sm">
+        <div className="panel w-full max-w-md rounded-xl px-4 py-3 text-sm">
           <span className="text-muted-foreground">{LOBBY_STRINGS.resumeSessionPrefix} </span>
-          <Link href={`/room/${resumeSession.roomCode}`} className="font-medium text-primary hover:underline">
+          <Link href={`/room/${resumeSession.roomCode}`} className="font-medium text-frc-blue-text hover:underline">
             {LOBBY_STRINGS.resumeSessionLink} ({resumeSession.roomCode})
           </Link>
         </div>
       )}
 
       <div className="grid w-full max-w-md gap-6">
-        <Card className="glass">
+        <Card className="panel">
           <CardHeader>
             <CardTitle>{LOBBY_STRINGS.createMatchButton}</CardTitle>
             <CardDescription>{LOBBY_STRINGS.appTagline}</CardDescription>
@@ -115,7 +115,7 @@ export default function Home(): React.JSX.Element {
           </CardContent>
         </Card>
 
-        <Card className="glass">
+        <Card className="panel">
           <CardHeader>
             <CardTitle>{LOBBY_STRINGS.joinMatchButton}</CardTitle>
           </CardHeader>
