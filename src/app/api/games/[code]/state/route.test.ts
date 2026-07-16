@@ -4,7 +4,9 @@ import { getDb } from '@/server/db';
 import { runMigrations } from '@/server/migrations';
 import { createGame, joinGame } from '@/server/games';
 import { appendStartHand } from '@/server/actions-log';
-import { submitAction } from '@/server/replay';
+import { advanceToNextHand, submitAction } from '@/server/replay';
+import { createProfile } from '@/server/ranked';
+import { DEFAULT_RULES, type RulesConfig } from '@/engine/rules-config';
 import type { GameState, RuleError } from '@/engine/game-state';
 import type { ClientGameView } from '@/lib/protocol';
 import { GET } from './route';
@@ -128,9 +130,10 @@ describe('GET /api/games/[code]/state', () => {
     expect(view.players[0].displayName).toBe('Alice');
     expect(view.players[0].isViewer).toBe(true);
     expect(view.players[1].displayName).toBe('Seat 1');
-    // No hand has started, so every seat's match-points total is zero.
+    // No hand has started, so every seat's match-points total is seeded
+    // with the match's starting pool (rules.points.startingPoints), not 0.
     for (const player of view.players) {
-      expect(player.matchPoints).toBe(0);
+      expect(player.matchPoints).toBe(DEFAULT_RULES.points.startingPoints);
     }
     // Regression: the waiting-for-players branch must report seq=0 (the
     // seq of the zero-action-rows read it actually performed), never a
@@ -173,9 +176,9 @@ describe('GET /api/games/[code]/state', () => {
     }
 
     // No hand has completed yet in this fresh match, so every seat's
-    // match-points total is still zero.
+    // match-points total is still exactly the configured starting pool.
     for (const player of view.players) {
-      expect(player.matchPoints).toBe(0);
+      expect(player.matchPoints).toBe(DEFAULT_RULES.points.startingPoints);
     }
 
     // Seat 0 is the dealer and has the opening draw; awaiting-discard.
@@ -219,6 +222,22 @@ describe('GET /api/games/[code]/state', () => {
       expect(views[1].players[0].concealedTiles).toBeNull();
     },
   );
+
+  it('waiting-for-players view seeds matchPoints with the game\'s configured startingPoints, not 0', async () => {
+    const created = await createGame(db, {
+      displayName: 'Alice',
+      rules: { points: { startingPoints: 50000 } } as Partial<RulesConfig>,
+    });
+
+    const response = await callState(created.roomCode, created.playerToken);
+    expect(response.status).toBe(200);
+
+    const view = (await response.json()) as ClientGameView;
+    expect(view.status).toBe('waiting-for-players');
+    for (const player of view.players) {
+      expect(player.matchPoints).toBe(50000);
+    }
+  });
 
   it('waiting-for-players view marks only joined seats occupied', async () => {
     const created = await createGame(db, { displayName: 'Alice' });
@@ -272,9 +291,69 @@ describe('GET /api/games/[code]/state', () => {
     const responses = await Promise.all(tokens.map((token) => callState(roomCode, token)));
     const views = (await Promise.all(responses.map((r) => r.json()))) as ClientGameView[];
 
+    // Pool-scale (RULES.md §13): every seat starts at
+    // rules.points.startingPoints, so the winner's total is
+    // startingPoints + leg.amount and the payer's is startingPoints -
+    // leg.amount, never the bare delta amount itself.
     for (const view of views) {
-      expect(view.players[winnerSeat].matchPoints).toBe(winnerLeg.amount);
-      expect(view.players[winnerLeg.payerSeat].matchPoints).toBe(-winnerLeg.amount);
+      expect(view.players[winnerSeat].matchPoints).toBe(DEFAULT_RULES.points.startingPoints + winnerLeg.amount);
+      expect(view.players[winnerLeg.payerSeat].matchPoints).toBe(
+        DEFAULT_RULES.points.startingPoints - winnerLeg.amount,
+      );
     }
   });
+
+  it(
+    "surfaces a settled 'ranked' view to an OBSERVER (a seat who never submitted the finishing action) " +
+      'once the match has finished — the observer-healing path',
+    async () => {
+      const profiles = await Promise.all([0, 1, 2, 3].map(async (i) => createProfile(db, `RankedPlayer${i}`)));
+
+      const created = await createGame(db, {
+        displayName: 'Alice',
+        rules: { points: { startingPoints: 100 } } as Partial<RulesConfig>,
+        profileId: profiles[0].profileId,
+      });
+      const j2 = await joinGame(db, created.roomCode, { displayName: 'Bob', profileId: profiles[1].profileId });
+      const j3 = await joinGame(db, created.roomCode, { displayName: 'Carol', profileId: profiles[2].profileId });
+      const j4 = await joinGame(db, created.roomCode, { displayName: 'Dave', profileId: profiles[3].profileId });
+      if ('error' in j2 || 'error' in j3 || 'error' in j4) {
+        throw new Error('unexpected join error setting up fixture');
+      }
+      const roomCode = created.roomCode;
+      const gameId = created.gameId;
+      // Seat 2 is the winner below — use seat 1's token as "the observer"
+      // (a seat who never submits the finishing action at all).
+      const observerToken = j2.playerToken;
+
+      await db.execute({ sql: 'DELETE FROM actions WHERE game_id = ?', args: [gameId] });
+      await appendStartHand(db, gameId, { handNumber: 1, dealerSeat: 0, seed: 44703, repeatCount: 0, prevailingWind: 'east' });
+
+      const discard = await submitAction(db, gameId, { type: 'discard', seat: 0, tileId: 'tiao-7-4' });
+      if (isSubmitRuleError(discard)) throw new Error(`unexpected rule error: ${discard.message}`);
+      const pass1 = await submitAction(db, gameId, { type: 'pass', seat: 1 });
+      if (isSubmitRuleError(pass1)) throw new Error(`unexpected rule error: ${pass1.message}`);
+      const win = await submitAction(db, gameId, { type: 'claim', seat: 2, claim: { type: 'hu' } });
+      if (isSubmitRuleError(win)) throw new Error(`unexpected rule error: ${win.message}`);
+
+      // Flip games.status to 'finished' via advanceToNextHand — mirrors what
+      // would happen server-side after the winning action, WITHOUT going
+      // through the actions route at all, so this test genuinely exercises
+      // the /state route's OWN independent settleRankedMatch call, not a
+      // side effect of the actions route's own hook.
+      const advance = await advanceToNextHand(db, gameId);
+      expect(advance).toEqual({ error: 'game-finished' });
+
+      const response = await callState(roomCode, observerToken);
+      expect(response.status).toBe(200);
+      const view = (await response.json()) as ClientGameView;
+      expect(view.status).toBe('finished');
+      expect(view.ranked?.status).toBe('settled');
+      if (view.ranked?.status !== 'settled') throw new Error('expected settled ranked view');
+      expect(view.ranked.seats.length).toBe(4);
+
+      const historyRows = await db.execute({ sql: 'SELECT COUNT(*) AS n FROM rank_history WHERE game_id = ?', args: [gameId] });
+      expect(Number(historyRows.rows[0].n)).toBe(4);
+    },
+  );
 });

@@ -91,3 +91,72 @@ export function clearSession(): void {
     // Never throw from here.
   }
 }
+
+// --- ProfileSession ---------------------------------------------------------
+//
+// A SEPARATE, additive localStorage entry for the ranked-ladder cross-match
+// player identity (see docs/DECISIONS.md's "ranked-ladder sign-off" entry).
+// Deliberately a distinct key/type from GameSession above: a GameSession is
+// scoped to a single active game (room code, seat, per-game token); a
+// ProfileSession is a long-lived identity that outlives any one game and is
+// never cleared alongside it. Same SSR-safe try/catch discipline throughout.
+
+export interface ProfileSession {
+  readonly profileId: string;
+  readonly profileToken: string;
+  readonly displayName: string;
+}
+
+const PROFILE_STORAGE_KEY = 'frc-mahjong:profile:v1';
+
+function isValidProfileSession(value: unknown): value is ProfileSession {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return isNonEmptyString(v.profileId) && isNonEmptyString(v.profileToken) && isNonEmptyString(v.displayName);
+}
+
+export function loadProfileSession(): ProfileSession | null {
+  if (!hasLocalStorage()) return null;
+
+  try {
+    const raw = window.localStorage.getItem(PROFILE_STORAGE_KEY);
+    if (raw === null) return null;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      window.localStorage.removeItem(PROFILE_STORAGE_KEY);
+      return null;
+    }
+
+    if (!isValidProfileSession(parsed)) {
+      window.localStorage.removeItem(PROFILE_STORAGE_KEY);
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function saveProfileSession(session: ProfileSession): void {
+  if (!hasLocalStorage()) return;
+
+  try {
+    window.localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(session));
+  } catch {
+    // Quota exceeded, private-mode restrictions, etc. — never throw from here.
+  }
+}
+
+export function clearProfileSession(): void {
+  if (!hasLocalStorage()) return;
+
+  try {
+    window.localStorage.removeItem(PROFILE_STORAGE_KEY);
+  } catch {
+    // Never throw from here.
+  }
+}

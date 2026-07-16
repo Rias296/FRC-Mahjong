@@ -175,7 +175,7 @@ export function computePaymentLegs(params: {
   for (const payerSeat of payerSeats) {
     const dealerInvolved = payerSeat === dealerSeat || winnerSeat === dealerSeat;
     const legTai = handTai + (dealerInvolved ? dealerTai : 0);
-    const amount = rules.basePoints + legTai * rules.pointsPerTai;
+    const amount = rules.points.basePoints + legTai * rules.points.perTai;
     legs.push({ payerSeat, payeeSeat: winnerSeat, amount });
   }
 
@@ -202,4 +202,52 @@ export function sumPaymentLegs(legs: readonly PaymentLeg[], initial: SeatTotals 
     totals[leg.payerSeat] -= leg.amount;
   }
   return totals;
+}
+
+/**
+ * The starting per-seat totals for a match, Mahjong-Soul-style: every seat
+ * begins with `rules.points.startingPoints`, and payment legs (via
+ * `sumPaymentLegs`) move points between seats from there.
+ */
+export function initialSeatTotals(rules: RulesConfig): SeatTotals {
+  const { startingPoints } = rules.points;
+  return [startingPoints, startingPoints, startingPoints, startingPoints];
+}
+
+/**
+ * Every seat whose running total has busted (`<= 0`), in seat order. Bust
+ * checks only ever happen between hands — payments are only applied at
+ * hand-over via `sumPaymentLegs`, never mid-hand.
+ */
+export function findBustedSeats(totals: SeatTotals): readonly Seat[] {
+  const busted: Seat[] = [];
+  for (let seat = 0; seat < 4; seat++) {
+    if (totals[seat] <= 0) busted.push(seat as Seat);
+  }
+  return busted;
+}
+
+export interface SeatStanding {
+  readonly seat: Seat;
+  readonly points: number;
+  readonly place: 1 | 2 | 3 | 4;
+}
+
+/**
+ * Ranks all four seats by `points` descending. Ties are broken by lower seat
+ * index placing higher (East-most wins ties). Every seat is assigned a
+ * distinct place 1-4; works correctly with negative totals (busted seats are
+ * still ranked, never assumed non-negative).
+ */
+export function computeStandings(totals: SeatTotals): readonly SeatStanding[] {
+  const seats: Seat[] = [0, 1, 2, 3];
+  const ranked = [...seats].sort((a, b) => {
+    if (totals[b] !== totals[a]) return totals[b] - totals[a];
+    return a - b;
+  });
+  return ranked.map((seat, index) => ({
+    seat,
+    points: totals[seat],
+    place: (index + 1) as 1 | 2 | 3 | 4,
+  }));
 }

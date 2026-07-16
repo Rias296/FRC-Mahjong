@@ -45,6 +45,12 @@ export const TABLE_STRINGS = {
   nextHandButton: 'Next Hand',
   backToHomeButton: 'Back to Home',
 
+  // Match points HUD / settlement / standings
+  pointsUnitLabel: 'pts',
+  settlementHeading: 'Settlement',
+  standingsHeading: 'Final Standings',
+  championLabel: 'Champion',
+
   // Rob kong prompt
   robWindowNote: "Passing means you can't win off a discard or rob until your next discard",
   robWaitingDeclarer: 'Rob window open —',
@@ -84,7 +90,25 @@ export function waitingOnPlayersNarration(count: number | undefined): string {
   return `waiting on ${count} player${count === 1 ? '' : 's'}...`;
 }
 
-/** "{payerName} pays {payeeName} {amount}" — amount should already be display-formatted (e.g. via frc.ts's formatTai). */
+/**
+ * "{payerName} pays {payeeName} {amount}" — amount should already be
+ * display-formatted (payment-leg amounts are match points, pool-scale; use
+ * frc.ts's `formatMatchPoints` plus `TABLE_STRINGS.pointsUnitLabel`, never
+ * `formatTai` — tai and match points are different units, see frc.ts's
+ * `formatMatchPoints` doc comment).
+ */
 export function paymentLegNarration(payerName: string, payeeName: string, amount: string): string {
   return `${payerName} ${TABLE_STRINGS.paysWord} ${payeeName} ${amount}`;
+}
+
+const PLACE_LABELS: Readonly<Record<1 | 2 | 3 | 4, string>> = {
+  1: '1st',
+  2: '2nd',
+  3: '3rd',
+  4: '4th',
+};
+
+/** Ordinal place label ("1st".."4th") for a standings row (matches SeatStanding.place's 1|2|3|4 shape). */
+export function placeLabel(place: 1 | 2 | 3 | 4): string {
+  return PLACE_LABELS[place];
 }

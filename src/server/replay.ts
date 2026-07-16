@@ -18,8 +18,13 @@ import {
 } from '../engine/game-state';
 import { canChow, canKongFromDiscard, canPung } from '../engine/actions';
 import { canWin } from '../engine/hand';
-import type { RulesConfig } from '../engine/rules-config';
-import { sumPaymentLegs, type SeatTotals } from '../engine/scoring';
+import { normalizeRules, type RulesConfig } from '../engine/rules-config';
+import {
+  findBustedSeats,
+  initialSeatTotals,
+  sumPaymentLegs,
+  type SeatTotals,
+} from '../engine/scoring';
 import { SEATS, type Seat } from '../engine/seats';
 import {
   appendActionAtSeq,
@@ -143,7 +148,7 @@ export async function getCurrentHandState(
   if (gameRow.rows.length === 0) {
     throw new Error(`getCurrentHandState: no game found with id ${gameId}`);
   }
-  const rules = JSON.parse(String(gameRow.rows[0].rules_config)) as RulesConfig;
+  const rules = normalizeRules(JSON.parse(String(gameRow.rows[0].rules_config)) as Partial<RulesConfig>);
 
   const rows = await listActionsForHand(db, gameId, handNumber);
   const state = foldActionRows(gameId, handNumber, rows, rules);
@@ -154,31 +159,39 @@ export async function getCurrentHandState(
 // --- getMatchSnapshot ----------------------------------------------------------
 
 /**
- * A read-path-only counterpart to `getCurrentHandState` that additionally
- * derives the running per-seat match-points total (`matchPoints`) across
- * every completed hand of the match so far, alongside the same
- * `state`/`handNumber`/`lastSeq`/`prevailingWind` a caller would otherwise
- * assemble via `getCurrentHandState` + `getStartHandPayload`.
+ * A read-path-only-in-the-sense-of-"pure read, no writes" counterpart to
+ * `getCurrentHandState` that additionally derives the running per-seat
+ * match-points total (`matchPoints`) across every completed hand of the
+ * match so far, alongside the same `state`/`handNumber`/`lastSeq`/
+ * `prevailingWind` a caller would otherwise assemble via `getCurrentHandState`
+ * + `getStartHandPayload`.
  *
  * Fetches the WHOLE game's action log in a single `listActionsForGame` call
  * (plus the same one-time `games.rules_config` read `getCurrentHandState`
- * does), groups the rows by `hand_number`, and folds each hand's rows
- * through the same `foldActionRows` used everywhere else in this module (no
- * duplicated replay logic). For every hand whose folded result reached
+ * does, normalized via `normalizeRules`), groups the rows by `hand_number`,
+ * and folds each hand's rows through the same `foldActionRows` used
+ * everywhere else in this module (no duplicated replay logic). Starts the
+ * running total from `initialSeatTotals(rules)` (every seat at
+ * `rules.points.startingPoints`, Mahjong-Soul-style pool scoring — see
+ * scoring.ts), not zero. For every hand whose folded result reached
  * `hand-over` with `result.kind === 'win'`, that hand's `PaymentLeg[]` is
- * folded into a running `SeatTotals` via `sumPaymentLegs`; an
+ * folded into the running `SeatTotals` via `sumPaymentLegs`; an
  * `exhaustive-draw` hand contributes no legs (no seat's total changes).
  *
- * Deliberately NOT used by `getCurrentHandState` itself or by any write-path
- * function (`submitAction`, `applyAutoPass`, `appendActionAtSeq`):
- * `getCurrentHandState` is re-invoked on every optimistic-concurrency retry
- * inside those write paths, and replaying the ENTIRE match on every retry
- * would multiply write-path cost for data (`matchPoints`) the write path
- * never uses. Callers that need match-points-aware responses (the API
- * routes) call this directly instead, as a single self-consistent snapshot
- * taken right after their own write already landed (safe: the action log is
- * append-only/monotonic, so a snapshot taken after a successful append is
- * guaranteed to include it).
+ * NOT used by `getCurrentHandState` itself, nor by the high-frequency
+ * optimistic-concurrency retry loops inside `submitAction`/`applyAutoPass`
+ * (both call `getCurrentHandState` on every retry attempt, and replaying the
+ * ENTIRE match on every one of those retries would multiply write-path cost
+ * for data those loops never use). It IS used by `advanceToNextHand`
+ * (write-path) for its pre-appendStartHand bust check via
+ * `deriveMatchContinuation` — that call site needs `matchPoints` to decide
+ * whether the match has ended, and only runs once per hand transition (not
+ * once per retry), so the extra full-match replay there is not the same cost
+ * concern this paragraph warns about. Every other caller that needs
+ * match-points-aware responses (the API routes) calls this directly too, as
+ * a single self-consistent snapshot taken right after its own write already
+ * landed (safe: the action log is append-only/monotonic, so a snapshot taken
+ * after a successful append is guaranteed to include it).
  *
  * Returns null under the same condition as `getCurrentHandState`: zero
  * action rows recorded for this game yet.
@@ -205,7 +218,7 @@ export async function getMatchSnapshot(
   if (gameRow.rows.length === 0) {
     throw new Error(`getMatchSnapshot: no game found with id ${gameId}`);
   }
-  const rules = JSON.parse(String(gameRow.rows[0].rules_config)) as RulesConfig;
+  const rules = normalizeRules(JSON.parse(String(gameRow.rows[0].rules_config)) as Partial<RulesConfig>);
 
   // Group by hand_number, preserving each hand's own seq-ascending row order
   // (listActionsForGame already returns rows ordered by seq ASC across the
@@ -221,7 +234,7 @@ export async function getMatchSnapshot(
   }
   const handNumbers = [...rowsByHand.keys()].sort((a, b) => a - b);
 
-  let matchPoints: SeatTotals = [0, 0, 0, 0];
+  let matchPoints: SeatTotals = initialSeatTotals(rules);
   let lastState: GameState | null = null;
   let lastHandNumber: number | null = null;
   let lastPrevailingWind: PrevailingWind | null = null;
@@ -484,31 +497,54 @@ async function countWindTransitions(db: Client, gameId: string, throughHandNumbe
   return transitions;
 }
 
-export type AdvanceToNextHandResult =
-  | { readonly state: GameState; readonly handNumber: number; readonly lastSeq: number }
-  | { readonly error: 'hand-not-over' | 'game-finished' };
+export type MatchContinuation =
+  | { readonly kind: 'over' }
+  | { readonly kind: 'continue'; readonly nextWind: PrevailingWind };
 
 /**
- * Advances a finished hand to the next one: derives the next dealer/repeat
- * from the just-finished hand's HandResult, advances the prevailing wind
- * whenever the dealer completes a full rotation back to seat 0, and ends the
- * game (flipping games.status to 'finished') once the wind table is
- * exhausted past 'north'. A next-hand start-hand row that already exists
- * (e.g. from a racing caller) is treated as a no-op success rather than
- * re-appended.
+ * Decides whether a just-finished hand (`handOverState`, already in the
+ * `hand-over` phase for `handNumber`) ends the match, or the match continues
+ * into at least one more hand — and if it continues, which prevailing wind
+ * the next hand starts under.
+ *
+ * Two conditions are checked, deliberately in this order:
+ *
+ * 1. Bust (RULES.md §13): any seat's `matchPoints` total is `<= 0`
+ *    (`findBustedSeats`) — the match ends immediately, regardless of the
+ *    wind progression. Checked FIRST so a match that both busts a seat AND
+ *    would otherwise have wind rounds remaining still ends on the bust, and
+ *    so the caller's bust check always runs before any next-hand is dealt.
+ * 2. Wind exhaustion: the pre-existing dealer-rotation-to-seat-0 tracking —
+ *    the match ends once a 4th such rotation (past the 'north' round) would
+ *    be needed (RULES.md §2).
+ *
+ * Both conditions are derived purely from the append-only action log (the
+ * `start-hand` rows fetched here via `listActionsForHand`/
+ * `countWindTransitions`) plus the caller-supplied `matchPoints` (itself
+ * derived from the same append-only log by `getMatchSnapshot`) — never from
+ * any mutable, later-changing source. Two concurrent callers computing this
+ * from data produced by the same underlying (monotonic, append-only) log
+ * therefore always agree, which is what makes this safe to call from a
+ * write path (`advanceToNextHand`) without a separate read-decide-write
+ * race window.
  */
-export async function advanceToNextHand(db: Client, gameId: string): Promise<AdvanceToNextHandResult> {
-  const current = await getCurrentHandState(db, gameId);
-  if (current === null) {
-    throw new Error(`advanceToNextHand: no hand exists yet for game ${gameId}`);
+export async function deriveMatchContinuation(
+  db: Client,
+  gameId: string,
+  handNumber: number,
+  handOverState: GameState,
+  matchPoints: SeatTotals,
+): Promise<MatchContinuation> {
+  if (findBustedSeats(matchPoints).length > 0) {
+    return { kind: 'over' };
   }
-  const { state, handNumber } = current;
 
-  if (state.phase.type !== 'hand-over') {
-    return { error: 'hand-not-over' };
+  if (handOverState.phase.type !== 'hand-over') {
+    throw new Error(
+      `deriveMatchContinuation: expected a hand-over state for game ${gameId} hand ${handNumber}, got '${handOverState.phase.type}'`,
+    );
   }
-
-  const { nextDealerSeat, nextRepeatCount } = state.phase.result;
+  const { nextDealerSeat } = handOverState.phase.result;
 
   const handRows = await listActionsForHand(db, gameId, handNumber);
   const startPayload = handRows[0].payload as StartHandPayload;
@@ -516,21 +552,63 @@ export async function advanceToNextHand(db: Client, gameId: string): Promise<Adv
   const currentWind = startPayload.prevailingWind;
 
   const dealerRotated = nextDealerSeat !== currentDealerSeat && nextDealerSeat === 0;
-
-  let nextWind: PrevailingWind = currentWind;
-  if (dealerRotated) {
-    const priorTransitions = await countWindTransitions(db, gameId, handNumber);
-    const newTransitionIndex = priorTransitions + 1;
-    if (newTransitionIndex >= WIND_PROGRESSION.length) {
-      await db.execute({
-        sql: `UPDATE games SET status = 'finished', updated_at = ? WHERE id = ?`,
-        args: [Date.now(), gameId],
-      });
-      return { error: 'game-finished' };
-    }
-    nextWind = WIND_PROGRESSION[newTransitionIndex];
+  if (!dealerRotated) {
+    return { kind: 'continue', nextWind: currentWind };
   }
 
+  const priorTransitions = await countWindTransitions(db, gameId, handNumber);
+  const newTransitionIndex = priorTransitions + 1;
+  if (newTransitionIndex >= WIND_PROGRESSION.length) {
+    return { kind: 'over' };
+  }
+  return { kind: 'continue', nextWind: WIND_PROGRESSION[newTransitionIndex] };
+}
+
+export type AdvanceToNextHandResult =
+  | { readonly state: GameState; readonly handNumber: number; readonly lastSeq: number }
+  | { readonly error: 'hand-not-over' | 'game-finished' };
+
+/**
+ * Advances a finished hand to the next one: derives the next dealer/repeat
+ * from the just-finished hand's HandResult, and uses `deriveMatchContinuation`
+ * to decide whether the match ends (a busted seat, checked first, OR wind-
+ * table exhaustion) or continues under a possibly-advanced prevailing wind.
+ * On `'over'`, flips `games.status` to `'finished'` (an idempotent UPDATE —
+ * safe to run again on a repeat call) and returns `{ error: 'game-finished' }`
+ * WITHOUT ever appending a next-hand `start-hand` row: the continuation
+ * check always runs before `appendStartHand`, so a busted or wind-exhausted
+ * match never gets dealt another hand. A next-hand start-hand row that
+ * already exists (e.g. from a racing caller) is treated as a no-op success
+ * rather than re-appended (see `appendStartHand`'s own doc comment).
+ *
+ * Reads its initial state via `getMatchSnapshot` (not `getCurrentHandState`)
+ * because the bust check needs `matchPoints`, which only `getMatchSnapshot`
+ * computes — see that function's doc comment for why this write-path use is
+ * an intentional exception to its "don't call this from a retry loop" cost
+ * warning (this runs once per hand transition, not once per optimistic-
+ * concurrency retry).
+ */
+export async function advanceToNextHand(db: Client, gameId: string): Promise<AdvanceToNextHandResult> {
+  const current = await getMatchSnapshot(db, gameId);
+  if (current === null) {
+    throw new Error(`advanceToNextHand: no hand exists yet for game ${gameId}`);
+  }
+  const { state, handNumber, matchPoints } = current;
+
+  if (state.phase.type !== 'hand-over') {
+    return { error: 'hand-not-over' };
+  }
+
+  const continuation = await deriveMatchContinuation(db, gameId, handNumber, state, matchPoints);
+  if (continuation.kind === 'over') {
+    await db.execute({
+      sql: `UPDATE games SET status = 'finished', updated_at = ? WHERE id = ?`,
+      args: [Date.now(), gameId],
+    });
+    return { error: 'game-finished' };
+  }
+
+  const { nextDealerSeat, nextRepeatCount } = state.phase.result;
   const nextHandNumber = handNumber + 1;
 
   // appendStartHand itself is the no-op-on-race guard here (see its own
@@ -545,7 +623,7 @@ export async function advanceToNextHand(db: Client, gameId: string): Promise<Adv
     dealerSeat: nextDealerSeat as Seat,
     seed: randomInt(0, 2 ** 31),
     repeatCount: nextRepeatCount,
-    prevailingWind: nextWind,
+    prevailingWind: continuation.nextWind,
   });
 
   // Re-derive via getCurrentHandState (not a direct replayHand call) so the
@@ -559,4 +637,42 @@ export async function advanceToNextHand(db: Client, gameId: string): Promise<Adv
     );
   }
   return { state: next.state, handNumber: next.handNumber, lastSeq: next.lastSeq };
+}
+
+// --- finalizeMatchIfOver -----------------------------------------------------------
+
+/**
+ * Eagerly flips `games.status` to `'finished'` if `snapshot` is already in a
+ * `hand-over` phase that `deriveMatchContinuation` determines ends the
+ * match (busted seat or wind exhaustion) — without requiring a separate
+ * `next-hand` call first. Intended for callers (the actions route) that
+ * already have a fresh `getMatchSnapshot`-shaped snapshot right after their
+ * own write landed, so a winning action's own response can surface
+ * `status: 'finished'` immediately.
+ *
+ * No-op (returns `'in-progress'`) when `snapshot.state.phase.type` isn't
+ * `'hand-over'`, or when it is but the match isn't actually over yet (no
+ * bust, wind rounds remaining). The `games.status` UPDATE itself is
+ * idempotent — safe to call this repeatedly for the same already-finished
+ * match, matching `advanceToNextHand`'s own idempotent finish-flip.
+ */
+export async function finalizeMatchIfOver(
+  db: Client,
+  gameId: string,
+  snapshot: { readonly state: GameState; readonly handNumber: number; readonly matchPoints: SeatTotals },
+): Promise<'finished' | 'in-progress'> {
+  if (snapshot.state.phase.type !== 'hand-over') {
+    return 'in-progress';
+  }
+
+  const continuation = await deriveMatchContinuation(db, gameId, snapshot.handNumber, snapshot.state, snapshot.matchPoints);
+  if (continuation.kind !== 'over') {
+    return 'in-progress';
+  }
+
+  await db.execute({
+    sql: `UPDATE games SET status = 'finished', updated_at = ? WHERE id = ?`,
+    args: [Date.now(), gameId],
+  });
+  return 'finished';
 }

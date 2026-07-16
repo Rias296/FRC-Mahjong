@@ -500,7 +500,7 @@ describe('successful rob', () => {
     expect(result.phase.result.legs[0]).toEqual({
       payerSeat: 0,
       payeeSeat: 1,
-      amount: DEFAULT_RULES.basePoints + (DEFAULT_RULES.robKongTai + dealerTai) * DEFAULT_RULES.pointsPerTai,
+      amount: DEFAULT_RULES.points.basePoints + (DEFAULT_RULES.robKongTai + dealerTai) * DEFAULT_RULES.points.perTai,
     });
     expect(result.phase.result.nextDealerSeat).toBe(1);
     expect(result.phase.result.nextRepeatCount).toBe(0);
@@ -791,7 +791,7 @@ describe('dealer robs a kong', () => {
       {
         payerSeat: 0,
         payeeSeat: 1,
-        amount: DEFAULT_RULES.basePoints + (DEFAULT_RULES.robKongTai + dealerTai) * DEFAULT_RULES.pointsPerTai,
+        amount: DEFAULT_RULES.points.basePoints + (DEFAULT_RULES.robKongTai + dealerTai) * DEFAULT_RULES.points.perTai,
       },
     ]);
   });
@@ -1192,7 +1192,7 @@ describe('full hand via rigged wall: rob-kong sequence end-to-end', () => {
     ]);
     const dealerTai = computeDealerTai(0, rules);
     expect(result.phase.result.legs).toEqual([
-      { payerSeat: 0, payeeSeat: 1, amount: rules.basePoints + (rules.robKongTai + dealerTai) * rules.pointsPerTai },
+      { payerSeat: 0, payeeSeat: 1, amount: rules.points.basePoints + (rules.robKongTai + dealerTai) * rules.points.perTai },
     ]);
     expect(result.phase.result.nextDealerSeat).toBe(1);
     expect(result.phase.result.nextRepeatCount).toBe(0);
@@ -1255,7 +1255,7 @@ describe('full hand via rigged wall: kong stands, hand continues to a later win'
     ]);
     const dealerTai = computeDealerTai(0, rules);
     expect(result.phase.result.legs).toEqual([
-      { payerSeat: 0, payeeSeat: 1, amount: rules.basePoints + dealerTai * rules.pointsPerTai },
+      { payerSeat: 0, payeeSeat: 1, amount: rules.points.basePoints + dealerTai * rules.points.perTai },
     ]);
     expect(result.phase.result.nextDealerSeat).toBe(1);
     expect(result.phase.result.nextRepeatCount).toBe(0);

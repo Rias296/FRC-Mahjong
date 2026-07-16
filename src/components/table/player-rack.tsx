@@ -1,6 +1,7 @@
 import { Badge } from '@/components/ui/badge';
 import { FaceDownTile, TileFace } from './tile-face';
 import { meldFaceDown, sortTilesForDisplay } from '@/lib/table/tile-display';
+import { formatMatchPoints } from '@/lib/theme/frc';
 import { TABLE_STRINGS } from '@/lib/i18n/table';
 import { cn } from '@/lib/utils';
 import type { ClientPlayerView, ClientTile } from '@/lib/protocol';
@@ -87,6 +88,10 @@ export function PlayerRack({
 
   return (
     <div className="flex flex-col items-center gap-2 rounded-lg border border-primary-hover/70 p-2">
+      <span className="font-hud text-xs text-accent">
+        {formatMatchPoints(player.matchPoints)} {TABLE_STRINGS.pointsUnitLabel}
+      </span>
+
       {player.barredVisible === true && <Badge variant="destructive">{TABLE_STRINGS.barredBadge}</Badge>}
 
       {player.melds.length > 0 && (

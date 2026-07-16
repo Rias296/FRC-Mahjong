@@ -587,7 +587,11 @@ describe('robbed-kong scoring: exact tai contribution and payment amount', () =>
   it('payment amount for a robbed kong with neither declarer nor robber as dealer carries zero dealer tai, hand-computed exactly', () => {
     const { hand: h, addedTile } = addedKongReadyHand('tong8');
     const wall = wallOf(...fillerTiles(20), tile('wan5'));
-    const customRules: RulesConfig = { ...DEFAULT_RULES, basePoints: 5, pointsPerTai: 2, robKongTai: 3 };
+    const customRules: RulesConfig = {
+      ...DEFAULT_RULES,
+      robKongTai: 3,
+      points: { ...DEFAULT_RULES.points, basePoints: 5, perTai: 2 },
+    };
     const state = stateWith({
       rules: customRules,
       wall,
@@ -616,11 +620,10 @@ describe('robbed-kong scoring: exact tai contribution and payment amount', () =>
     const wall = wallOf(...fillerTiles(20), tile('wan5'));
     const customRules: RulesConfig = {
       ...DEFAULT_RULES,
-      basePoints: 5,
-      pointsPerTai: 2,
       robKongTai: 3,
       dealerBaseTai: 1,
       dealerRepeatBonusTaiPerRepeat: 2,
+      points: { ...DEFAULT_RULES.points, basePoints: 5, perTai: 2 },
     };
     const state = stateWith({
       rules: customRules,

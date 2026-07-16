@@ -9,9 +9,14 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Field, FieldGroup, FieldLabel, FieldError } from '@/components/ui/field';
 import { JoinRoomForm } from '@/components/lobby/join-room-form';
-import { createGame } from '@/lib/api-client';
+import { RankProgress } from '@/components/ranked/rank-progress';
+import { Skeleton } from '@/components/ui/skeleton';
+import { createGame, ensureProfile, getMyProfile } from '@/lib/api-client';
 import { loadSession, saveSession, type GameSession } from '@/lib/session';
 import { LOBBY_STRINGS } from '@/lib/i18n/lobby';
+import { RANKED_STRINGS } from '@/lib/i18n/ranked';
+import { asTierBand } from '@/lib/theme/frc';
+import type { ProfileMeResponse } from '@/lib/protocol';
 
 export default function Home(): React.JSX.Element {
   const router = useRouter();
@@ -19,6 +24,8 @@ export default function Home(): React.JSX.Element {
   const [nameError, setNameError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [resumeSession, setResumeSession] = useState<GameSession | null>(null);
+  const [profile, setProfile] = useState<ProfileMeResponse | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
 
   useEffect(() => {
     // localStorage is browser-only; reading it must be deferred to a
@@ -27,6 +34,24 @@ export default function Home(): React.JSX.Element {
     // session state, not an external-store subscription.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setResumeSession(loadSession());
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const token = await ensureProfile();
+      if (token === null) {
+        if (!cancelled) setProfileLoading(false);
+        return;
+      }
+      const result = await getMyProfile(token);
+      if (cancelled) return;
+      if (result.ok) setProfile(result.data);
+      setProfileLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function handleCreate(event: React.FormEvent<HTMLFormElement>): Promise<void> {
@@ -42,7 +67,10 @@ export default function Home(): React.JSX.Element {
 
     setCreating(true);
     try {
-      const result = await createGame({ displayName: trimmedName });
+      // Best-effort, same as JoinRoomForm: an unavailable ranked profile must
+      // never block creating a casual match.
+      const profileToken = (await ensureProfile(trimmedName)) ?? undefined;
+      const result = await createGame({ displayName: trimmedName, profileToken });
       if (result.ok) {
         saveSession({
           roomCode: result.data.roomCode,
@@ -76,6 +104,22 @@ export default function Home(): React.JSX.Element {
         <h1 className="font-display text-3xl text-foreground sm:text-4xl">{LOBBY_STRINGS.appTitle}</h1>
         <p className="max-w-md text-muted-foreground">{LOBBY_STRINGS.appTagline}</p>
       </div>
+
+      <Card className="panel w-full max-w-md">
+        <CardHeader>
+          <CardTitle>{RANKED_STRINGS.profileCardHeading}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {profileLoading ? (
+            <Skeleton className="h-14 w-full" />
+          ) : profile !== null ? (
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-foreground">{profile.displayName}</span>
+              <RankProgress rankPoints={profile.rankPoints} tier={asTierBand(profile.tier)} division={profile.division} />
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
 
       {resumeSession !== null && (
         <div className="panel w-full max-w-md rounded-xl px-4 py-3 text-sm">

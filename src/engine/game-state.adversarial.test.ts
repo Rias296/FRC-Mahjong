@@ -232,7 +232,7 @@ describe('multi-hand dealer-repeat chaining', () => {
 
     // Self-draw win by the dealer: all 3 legs carry handTai(selfDrawTai) + dealerTai.
     const expectedLegTai = DEFAULT_RULES.selfDrawTai + expectedDealerTai;
-    const expectedAmount = DEFAULT_RULES.basePoints + expectedLegTai * DEFAULT_RULES.pointsPerTai;
+    const expectedAmount = DEFAULT_RULES.points.basePoints + expectedLegTai * DEFAULT_RULES.points.perTai;
 
     expect(hand2Result.phase.result.legs).toHaveLength(3);
     for (const leg of hand2Result.phase.result.legs) {
@@ -280,7 +280,7 @@ describe('multi-hand dealer-repeat chaining', () => {
       throw new Error('expected hand 2 to end in a win');
     }
     const expectedLegTai = DEFAULT_RULES.selfDrawTai + DEFAULT_RULES.dealerBaseTai;
-    const expectedAmount = DEFAULT_RULES.basePoints + expectedLegTai * DEFAULT_RULES.pointsPerTai;
+    const expectedAmount = DEFAULT_RULES.points.basePoints + expectedLegTai * DEFAULT_RULES.points.perTai;
     for (const leg of hand2Result.phase.result.legs) {
       expect(leg.amount).toBe(expectedAmount);
     }

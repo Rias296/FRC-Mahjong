@@ -5,9 +5,10 @@ import { runMigrations } from '@/server/migrations';
 import { createGame, joinGame } from '@/server/games';
 import { appendStartHand } from '@/server/actions-log';
 import { submitAction } from '@/server/replay';
+import { createProfile } from '@/server/ranked';
 import type { GameState, RuleError } from '@/engine/game-state';
 import type { ClientGameView } from '@/lib/protocol';
-import type { RulesConfig } from '@/engine/rules-config';
+import { DEFAULT_RULES, type RulesConfig } from '@/engine/rules-config';
 import { POST } from './route';
 
 function isSubmitRuleError(
@@ -144,10 +145,10 @@ describe('POST /api/games/[code]/next-hand', () => {
     expect(view.viewerSeat).toBe(1);
     expect(view.roomCode).toBe(roomCode);
     // Hand 1 was an exhaustive draw (no winner), so it contributed no
-    // payment legs — every seat's match-points total is still zero going
-    // into hand 2.
+    // payment legs — every seat's match-points total is still exactly the
+    // configured starting pool going into hand 2.
     for (const player of view.players) {
-      expect(player.matchPoints).toBe(0);
+      expect(player.matchPoints).toBe(DEFAULT_RULES.points.startingPoints);
     }
   });
 
@@ -176,7 +177,54 @@ describe('POST /api/games/[code]/next-hand', () => {
     expect(response.status).toBe(200);
     const view = (await response.json()) as ClientGameView;
     expect(view.handNumber).toBe(2);
-    expect(view.players[winnerSeat].matchPoints).toBe(winnerLeg.amount);
-    expect(view.players[winnerLeg.payerSeat].matchPoints).toBe(-winnerLeg.amount);
+    // Pool-scale (RULES.md §13): every seat starts at
+    // rules.points.startingPoints, so the winner's carried-forward total is
+    // startingPoints + leg.amount and the payer's is startingPoints -
+    // leg.amount, never the bare delta amount itself.
+    expect(view.players[winnerSeat].matchPoints).toBe(DEFAULT_RULES.points.startingPoints + winnerLeg.amount);
+    expect(view.players[winnerLeg.payerSeat].matchPoints).toBe(
+      DEFAULT_RULES.points.startingPoints - winnerLeg.amount,
+    );
+  });
+
+  it("includes a settled 'ranked' result on the game-finished error response when all 4 seats are linked", async () => {
+    const profiles = await Promise.all([0, 1, 2, 3].map(async (i) => createProfile(db, `RankedPlayer${i}`)));
+
+    const created = await createGame(db, {
+      displayName: 'Alice',
+      rules: { points: { startingPoints: 100 } } as Partial<RulesConfig>,
+      profileId: profiles[0].profileId,
+    });
+    const j2 = await joinGame(db, created.roomCode, { displayName: 'Bob', profileId: profiles[1].profileId });
+    const j3 = await joinGame(db, created.roomCode, { displayName: 'Carol', profileId: profiles[2].profileId });
+    const j4 = await joinGame(db, created.roomCode, { displayName: 'Dave', profileId: profiles[3].profileId });
+    if ('error' in j2 || 'error' in j3 || 'error' in j4) {
+      throw new Error('unexpected join error setting up fixture');
+    }
+    const gameId = created.gameId;
+    const roomCode = created.roomCode;
+
+    await db.execute({ sql: 'DELETE FROM actions WHERE game_id = ?', args: [gameId] });
+    await appendStartHand(db, gameId, { handNumber: 1, dealerSeat: 0, seed: 44703, repeatCount: 0, prevailingWind: 'east' });
+    const discard = await submitAction(db, gameId, { type: 'discard', seat: 0, tileId: 'tiao-7-4' });
+    if (isSubmitRuleError(discard)) throw new Error(`unexpected rule error: ${discard.message}`);
+    const pass1 = await submitAction(db, gameId, { type: 'pass', seat: 1 });
+    if (isSubmitRuleError(pass1)) throw new Error(`unexpected rule error: ${pass1.message}`);
+    const win = await submitAction(db, gameId, { type: 'claim', seat: 2, claim: { type: 'hu' } });
+    if (isSubmitRuleError(win)) throw new Error(`unexpected rule error: ${win.message}`);
+
+    // The bust already ended the match at the engine/matchPoints level, but
+    // games.status hasn't been flipped yet (submitAction was called
+    // directly, bypassing the actions route's own finalizeMatchIfOver hook)
+    // — so this call genuinely exercises next-hand's OWN game-finished
+    // branch and its ranked hook, not a pre-flipped no-op.
+    const response = await callNextHand(roomCode, created.playerToken);
+    expect(response.status).toBe(409);
+    const body = (await response.json()) as { error: string; ranked?: { status: string } };
+    expect(body.error).toBe('game-finished');
+    expect(body.ranked?.status).toBe('settled');
+
+    const historyRows = await db.execute({ sql: 'SELECT COUNT(*) AS n FROM rank_history WHERE game_id = ?', args: [gameId] });
+    expect(Number(historyRows.rows[0].n)).toBe(4);
   });
 });

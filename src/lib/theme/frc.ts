@@ -9,6 +9,7 @@
 
 import type { Seat } from '../../engine/seats';
 import type { TileKind } from '../../engine/tiles';
+import type { Band, Division, TierBand } from '../ranked/config';
 
 export type ActionKey = 'draw' | 'discard' | 'hu' | 'pung' | 'kong' | 'chow' | 'pass' | 'rob';
 
@@ -124,4 +125,105 @@ export const TAI_UNIT_LONG = 'Ranking Points';
 
 export function formatTai(tai: number): string {
   return `${tai} ${TAI_UNIT_SHORT}`;
+}
+
+/** Ranked-ladder display unit — "RP" is already taken by tai's display label above. */
+export const RANK_UNIT_SHORT = 'DP';
+export const RANK_UNIT_LONG = 'District Points';
+
+/** Shared ASCII grouped-thousands digit-grouping logic for formatMatchPoints/formatRankPoints — never duplicate this regex. */
+function groupThousands(magnitude: number): string {
+  return magnitude.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/**
+ * Match-points (point-stick pool total) numeral formatter — ASCII
+ * grouped-thousands, e.g. `100,000` / `-5,000`. Safe for the VT323 HUD font
+ * (no CJK, no locale-dependent separators).
+ *
+ * Deliberately distinct from `formatTai`: match points are the pool-scale
+ * point-stick total tracked per seat across a match (`ClientPlayerView.matchPoints`,
+ * `PaymentLeg.amount`), while tai is a hand-scoring unit displayed elsewhere
+ * as "ranking points"/RP via `formatTai`. The two must never be conflated —
+ * an earlier bug rendered `PaymentLeg.amount` (match-points scale, e.g. 5000)
+ * through `formatTai` (i.e. labelled "RP"), which this formatter's dedicated
+ * unit-less numeral output and the caller-supplied "pts" label
+ * (`TABLE_STRINGS.pointsUnitLabel`) replace.
+ */
+export function formatMatchPoints(points: number): string {
+  const magnitude = Math.trunc(Math.abs(points));
+  const sign = magnitude !== 0 && points < 0 ? '-' : '';
+  return `${sign}${groupThousands(magnitude)}`;
+}
+
+/**
+ * Ranked-ladder RP numeral formatter, displayed to players as "DP" / District
+ * Points (see `RANK_UNIT_SHORT`/`RANK_UNIT_LONG` — `rankPoints`/`rpDelta`
+ * stay the canonical wire/DB name; "RP" is already `formatTai`'s display
+ * label, per docs/RANKED.md and docs/DECISIONS.md's ranked-ladder sign-off).
+ * ASCII grouped-thousands via the same `groupThousands` helper as
+ * `formatMatchPoints` (never a duplicated regex), with the unit suffix baked
+ * in (like `formatTai`, unlike `formatMatchPoints`) since a bare RP delta
+ * numeral with no unit would be ambiguous against match-points deltas shown
+ * in the same settlement UI.
+ */
+export function formatRankPoints(points: number): string {
+  const magnitude = Math.trunc(Math.abs(points));
+  const sign = magnitude !== 0 && points < 0 ? '-' : '';
+  return `${sign}${groupThousands(magnitude)} ${RANK_UNIT_SHORT}`;
+}
+
+const TIER_BANDS: readonly TierBand[] = ['bronze', 'silver', 'expert', 'platinum', 'gold', 'apex'];
+
+function isTierBand(value: string): value is TierBand {
+  return (TIER_BANDS as readonly string[]).includes(value);
+}
+
+/**
+ * Narrows a wire-supplied tier string into a real `TierBand`.
+ * `ProfileMeResponse.tier`/`ClientRankedResultSeat.tier` are typed as plain
+ * `string` on the wire (see protocol.ts's own doc comment on why — that file
+ * is out of scope for this round, already shipped) rather than the literal
+ * `TierBand` union, since protocol.ts deliberately avoids importing
+ * `src/lib/ranked/config.ts`'s server-adjacent types. The server is the sole
+ * source of truth and always emits one of the 6 known bands, so an
+ * unrecognized value here can only mean a client/server version skew;
+ * defensively falls back to 'bronze' rather than crashing the UI. The
+ * fallback is deliberately noisy (`console.error`), not silent: 'bronze' is a
+ * fully plausible-looking rank badge, indistinguishable on screen from a
+ * genuine Bronze player, so a player-visible degrade-quietly/log-loudly split
+ * is the only way engineering can ever notice a real version-skew bug — a
+ * silent fallback here would make the ranked ladder's entire visible surface
+ * (the badge) able to lie confidently with zero signal.
+ */
+export function asTierBand(value: string): TierBand {
+  if (isTierBand(value)) return value;
+  console.error(`asTierBand: unrecognized tier "${value}" from the wire — falling back to 'bronze'. This indicates a client/server version skew.`);
+  return 'bronze';
+}
+
+const TIER_BAND_LABELS: Readonly<Record<Band, string>> = {
+  bronze: 'Bronze',
+  silver: 'Silver',
+  expert: 'Expert',
+  platinum: 'Platinum',
+  gold: 'Gold',
+};
+
+/**
+ * Full user-facing tier+division label for a ladder rung, e.g. "Bronze 3".
+ * Apex Grandmaster has no numbered division, so it renders with no division
+ * suffix: "Apex Grandmaster" (per docs/RANKED.md §1/§3). `division` should be
+ * non-null for every non-apex tier in practice (see `rankForRp`), but this
+ * degrades gracefully (band name alone) rather than crashing if it's ever
+ * null for a numbered band.
+ */
+export function tierLabel(tier: TierBand, division: Division | null): string {
+  if (tier === 'apex') return 'Apex Grandmaster';
+  return division === null ? TIER_BAND_LABELS[tier] : `${TIER_BAND_LABELS[tier]} ${division}`;
+}
+
+/** Just the division part of a rung, e.g. "Division 3". Apex (no numbered division) renders as an empty string. */
+export function divisionLabel(division: Division | null): string {
+  return division === null ? '' : `Division ${division}`;
 }

@@ -93,6 +93,60 @@ export interface ClientPhaseView {
   readonly result?: HandResult;
 }
 
+// --- Ranked ladder ---------------------------------------------------------------
+
+/**
+ * The wire mirror of `src/server/ranked.ts`'s `RankedResultSeat`/
+ * `RankedResultView`. Deliberately never carries an exact RP total for any
+ * seat (only `rpDelta`, the per-match change) — see that module's doc
+ * comment for the full redaction rationale. `tier` is a `TierBand` string
+ * ('bronze' | 'silver' | 'expert' | 'platinum' | 'gold' | 'apex') kept as
+ * `string` here so this file (imported by future client code) never needs to
+ * import `src/lib/ranked/config.ts`'s server-adjacent types.
+ */
+export interface ClientRankedResultSeat {
+  readonly seat: Seat;
+  readonly placement: 1 | 2 | 3 | 4;
+  readonly tier: string;
+  readonly division: 1 | 2 | 3 | null;
+  readonly rpDelta: number;
+  readonly promotedToApex: boolean;
+}
+
+export type ClientRankedResultView =
+  | { readonly status: 'unranked' }
+  | { readonly status: 'pending' }
+  | { readonly status: 'settled'; readonly seats: readonly ClientRankedResultSeat[] };
+
+export interface CreateProfileRequest {
+  readonly displayName: string;
+}
+
+export interface CreateProfileResponse {
+  readonly profileId: string;
+  readonly profileToken: string;
+}
+
+export interface ProfileMeResponse {
+  readonly profileId: string;
+  readonly displayName: string;
+  readonly rankPoints: number;
+  readonly tier: string;
+  readonly division: 1 | 2 | 3 | null;
+}
+
+export interface ApexLeaderboardEntry {
+  readonly profileId: string;
+  readonly displayName: string;
+  readonly rankPoints: number;
+  readonly apexAttainedAt: number;
+}
+
+export interface ApexLeaderboardResponse {
+  readonly foundingOrder: readonly ApexLeaderboardEntry[];
+  readonly rpOrder: readonly ApexLeaderboardEntry[];
+}
+
 export interface ClientGameView {
   readonly seq: number;
   readonly roomCode: string;
@@ -109,11 +163,14 @@ export interface ClientGameView {
   readonly dealerSeat: Seat | null;
   /** Null iff `phase` is null (status is waiting-for-players). */
   readonly repeatCount: number | null;
+  /** Only meaningfully present when `status === 'finished'`. */
+  readonly ranked?: ClientRankedResultView;
 }
 
 export interface CreateGameRequest {
   readonly displayName: string;
   readonly rules?: Partial<RulesConfig>;
+  readonly profileToken?: string;
 }
 
 export interface CreateGameResponse {
@@ -126,6 +183,7 @@ export interface CreateGameResponse {
 
 export interface JoinGameRequest {
   readonly displayName: string;
+  readonly profileToken?: string;
 }
 
 export interface JoinGameResponse {
@@ -271,6 +329,7 @@ const KNOWN_RULES_KEYS: readonly string[] = [
   ...BOOLEAN_RULES_KEYS,
   'robKong',
   'sacredDiscard',
+  'points',
 ];
 
 function isValidRobKongOverride(value: unknown): boolean {
@@ -280,6 +339,23 @@ function isValidRobKongOverride(value: unknown): boolean {
   }
   if ('enabled' in value && typeof value.enabled !== 'boolean') return false;
   if ('robConcealedKong' in value && typeof value.robConcealedKong !== 'boolean') return false;
+  return true;
+}
+
+function isValidPointsOverride(value: unknown): boolean {
+  if (!isPlainObject(value) || Array.isArray(value)) return false;
+  for (const key of Object.keys(value)) {
+    if (key !== 'startingPoints' && key !== 'basePoints' && key !== 'perTai') return false;
+  }
+  if ('startingPoints' in value && !(typeof value.startingPoints === 'number' && Number.isFinite(value.startingPoints))) {
+    return false;
+  }
+  if ('basePoints' in value && !(typeof value.basePoints === 'number' && Number.isFinite(value.basePoints))) {
+    return false;
+  }
+  if ('perTai' in value && !(typeof value.perTai === 'number' && Number.isFinite(value.perTai))) {
+    return false;
+  }
   return true;
 }
 
@@ -309,6 +385,27 @@ export function isValidRulesOverride(value: unknown): value is Partial<RulesConf
   }
   if ('robKong' in value && !isValidRobKongOverride(value.robKong)) return false;
   if ('sacredDiscard' in value && !isValidSacredDiscardOverride(value.sacredDiscard)) return false;
+  if ('points' in value && !isValidPointsOverride(value.points)) return false;
 
   return true;
+}
+
+// --- isValidProfileToken -------------------------------------------------------
+
+/**
+ * A minimal structural guard for a client-supplied `profileToken` on
+ * `CreateGameRequest`/`JoinGameRequest`: `undefined` (no profile linkage
+ * requested) is valid; anything present must be a non-empty string. Route
+ * handlers MUST validate with this before ever calling
+ * `resolveProfileToken` — same "validate untrusted wire input at the exact
+ * boundary" discipline as `isValidGameAction`/`isValidRulesOverride`.
+ */
+export function isValidProfileToken(value: unknown): value is string | undefined {
+  if (value === undefined) return true;
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/** Same minimal structural guard, for `CreateProfileRequest.displayName`. */
+export function isValidDisplayName(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
 }

@@ -3,6 +3,9 @@ import {
   computeDealerTai,
   computeHandTai,
   computePaymentLegs,
+  computeStandings,
+  findBustedSeats,
+  initialSeatTotals,
   meetsMinimumTai,
   sumPaymentLegs,
   TAI_EVALUATORS,
@@ -143,7 +146,7 @@ describe('meetsMinimumTai', () => {
 });
 
 describe('computePaymentLegs — discard shape', () => {
-  it('discard win with dealer uninvolved produces one leg of basePoints + handTai * pointsPerTai', () => {
+  it('discard win with dealer uninvolved produces one leg of points.basePoints + handTai * points.perTai', () => {
     // Dealer is seat 0; winner seat 1, payer seat 2 — neither is the dealer.
     const legs = computePaymentLegs({
       winnerSeat: 1,
@@ -154,7 +157,25 @@ describe('computePaymentLegs — discard shape', () => {
       repeatCount: 0,
       rules: DEFAULT_RULES,
     });
-    expect(legs).toEqual([{ payerSeat: 2, payeeSeat: 1, amount: DEFAULT_RULES.basePoints + 4 * DEFAULT_RULES.pointsPerTai }]);
+    expect(legs).toEqual([
+      { payerSeat: 2, payeeSeat: 1, amount: DEFAULT_RULES.points.basePoints + 4 * DEFAULT_RULES.points.perTai },
+    ]);
+  });
+
+  it('discard win uses pool-scale points.basePoints/points.perTai for an exact amount (3000 + 2*1000 = 5000)', () => {
+    expect(DEFAULT_RULES.points.basePoints).toBe(3000);
+    expect(DEFAULT_RULES.points.perTai).toBe(1000);
+    // Dealer is seat 3; winner seat 0, payer seat 1 — neither is the dealer.
+    const legs = computePaymentLegs({
+      winnerSeat: 0,
+      winType: 'discard',
+      payerSeats: [1],
+      handTai: 2,
+      dealerSeat: 3,
+      repeatCount: 0,
+      rules: DEFAULT_RULES,
+    });
+    expect(legs).toEqual([{ payerSeat: 1, payeeSeat: 0, amount: 5000 }]);
   });
 
   it('discard win where the winner is the dealer adds dealer tai to the single leg', () => {
@@ -168,7 +189,7 @@ describe('computePaymentLegs — discard shape', () => {
       repeatCount: 0,
       rules: DEFAULT_RULES,
     });
-    const expectedAmount = DEFAULT_RULES.basePoints + (4 + dealerTai) * DEFAULT_RULES.pointsPerTai;
+    const expectedAmount = DEFAULT_RULES.points.basePoints + (4 + dealerTai) * DEFAULT_RULES.points.perTai;
     expect(legs).toEqual([{ payerSeat: 2, payeeSeat: 0, amount: expectedAmount }]);
   });
 
@@ -183,7 +204,7 @@ describe('computePaymentLegs — discard shape', () => {
       repeatCount: 0,
       rules: DEFAULT_RULES,
     });
-    const expectedAmount = DEFAULT_RULES.basePoints + (4 + dealerTai) * DEFAULT_RULES.pointsPerTai;
+    const expectedAmount = DEFAULT_RULES.points.basePoints + (4 + dealerTai) * DEFAULT_RULES.points.perTai;
     expect(legs).toEqual([{ payerSeat: 0, payeeSeat: 1, amount: expectedAmount }]);
   });
 
@@ -199,13 +220,33 @@ describe('computePaymentLegs — discard shape', () => {
       repeatCount: 2,
       rules: DEFAULT_RULES,
     });
-    const expectedAmount = DEFAULT_RULES.basePoints + (1 + 5) * DEFAULT_RULES.pointsPerTai;
+    const expectedAmount = DEFAULT_RULES.points.basePoints + (1 + 5) * DEFAULT_RULES.points.perTai;
     expect(legs[0].amount).toBe(expectedAmount);
+  });
+
+  it('robbed-kong payment leg (discard-shaped, kong declarer sole payer) uses pool-scale amounts', () => {
+    // Per RULES.md §7.2: the kong declarer is treated as the discarder for
+    // payment purposes, so a robbed kong is scored via winType: 'discard'
+    // with payerSeats: [kongDeclarerSeat].
+    const kongDeclarerSeat = 2;
+    const robberSeat = 0;
+    const legs = computePaymentLegs({
+      winnerSeat: robberSeat,
+      winType: 'discard',
+      payerSeats: [kongDeclarerSeat],
+      handTai: 1, // robKongTai contribution, already summed into handTai upstream
+      dealerSeat: 3,
+      repeatCount: 0,
+      rules: DEFAULT_RULES,
+    });
+    expect(legs).toEqual([
+      { payerSeat: kongDeclarerSeat, payeeSeat: robberSeat, amount: DEFAULT_RULES.points.basePoints + 1 * DEFAULT_RULES.points.perTai },
+    ]);
   });
 });
 
 describe('computePaymentLegs — self-draw shape', () => {
-  it('self-drawn win by the dealer adds dealer tai to all three legs', () => {
+  it('self-drawn win by the dealer adds dealer tai to all three legs, at pool-scale amounts', () => {
     const dealerTai = computeDealerTai(0, DEFAULT_RULES);
     const legs = computePaymentLegs({
       winnerSeat: 0,
@@ -216,14 +257,14 @@ describe('computePaymentLegs — self-draw shape', () => {
       repeatCount: 0,
       rules: DEFAULT_RULES,
     });
-    const expectedAmount = DEFAULT_RULES.basePoints + (2 + dealerTai) * DEFAULT_RULES.pointsPerTai;
+    const expectedAmount = DEFAULT_RULES.points.basePoints + (2 + dealerTai) * DEFAULT_RULES.points.perTai;
     for (const leg of legs) {
       expect(leg.amount).toBe(expectedAmount);
       expect(leg.payeeSeat).toBe(0);
     }
   });
 
-  it('self-drawn win by a non-dealer adds dealer tai only to the dealer\'s payer leg', () => {
+  it('self-drawn win by a non-dealer adds dealer tai only to the dealer\'s payer leg, at pool-scale amounts', () => {
     const dealerTai = computeDealerTai(0, DEFAULT_RULES);
     const legs = computePaymentLegs({
       winnerSeat: 1,
@@ -237,10 +278,10 @@ describe('computePaymentLegs — self-draw shape', () => {
     const dealerLeg = legs.find((l) => l.payerSeat === 0);
     const otherLegs = legs.filter((l) => l.payerSeat !== 0);
 
-    expect(dealerLeg?.amount).toBe(DEFAULT_RULES.basePoints + (2 + dealerTai) * DEFAULT_RULES.pointsPerTai);
+    expect(dealerLeg?.amount).toBe(DEFAULT_RULES.points.basePoints + (2 + dealerTai) * DEFAULT_RULES.points.perTai);
     expect(otherLegs).toHaveLength(2);
     for (const leg of otherLegs) {
-      expect(leg.amount).toBe(DEFAULT_RULES.basePoints + 2 * DEFAULT_RULES.pointsPerTai);
+      expect(leg.amount).toBe(DEFAULT_RULES.points.basePoints + 2 * DEFAULT_RULES.points.perTai);
     }
   });
 
@@ -404,5 +445,145 @@ describe('sumPaymentLegs', () => {
       const totals = sumPaymentLegs(legs);
       expect(totals.reduce((a, b) => a + b, 0)).toBe(0);
     }
+  });
+
+  it('computes the correct signed per-seat delta for a robbed-kong win (payment-shaped as a single-payer discard, matching game-state.ts resolveRobKong)', () => {
+    // Mirrors exactly how game-state.ts's resolveRobKong builds legs:
+    // handTai = computeHandTai({ winType: 'robbed-kong' }, rules) (folds in
+    // rules.robKongTai via the robKong evaluator), then computePaymentLegs
+    // with winType 'discard' and a single payerSeat (the kong declarer).
+    const rules: RulesConfig = DEFAULT_RULES;
+    const declarerSeat: Seat = 2;
+    const winnerSeat: Seat = 0;
+    const handTai = computeHandTai({ winType: 'robbed-kong' }, rules);
+    expect(handTai).toBe(rules.robKongTai); // sanity: only the robKong slot is non-zero here
+
+    const legs = computePaymentLegs({
+      winnerSeat,
+      winType: 'discard',
+      payerSeats: [declarerSeat],
+      handTai,
+      dealerSeat: 1, // neither declarer nor winner is dealer — no dealerTai folded in
+      repeatCount: 0,
+      rules,
+    });
+
+    expect(legs).toEqual([
+      { payerSeat: declarerSeat, payeeSeat: winnerSeat, amount: rules.points.basePoints + handTai * rules.points.perTai },
+    ]);
+
+    // The delta shown per seat in HandOverPanel is exactly sumPaymentLegs(result.legs) —
+    // cross-check it independently here rather than trusting the component's plumbing.
+    const deltas = sumPaymentLegs(legs);
+    const amount = rules.points.basePoints + handTai * rules.points.perTai;
+    expect(deltas).toEqual([amount, 0, -amount, 0]);
+    expect(deltas[winnerSeat]).toBe(amount);
+    expect(deltas[declarerSeat]).toBe(-amount);
+  });
+
+  it('a robbed-kong win where the winner IS the dealer folds dealerTai into the single payer leg (delta cross-check)', () => {
+    const rules: RulesConfig = DEFAULT_RULES;
+    const declarerSeat: Seat = 1;
+    const winnerSeat: Seat = 0; // dealer
+    const handTai = computeHandTai({ winType: 'robbed-kong' }, rules);
+    const repeatCount = 2;
+
+    const legs = computePaymentLegs({
+      winnerSeat,
+      winType: 'discard',
+      payerSeats: [declarerSeat],
+      handTai,
+      dealerSeat: 0,
+      repeatCount,
+      rules,
+    });
+
+    const dealerTai = computeDealerTai(repeatCount, rules);
+    const expectedAmount = rules.points.basePoints + (handTai + dealerTai) * rules.points.perTai;
+    expect(legs).toEqual([{ payerSeat: declarerSeat, payeeSeat: winnerSeat, amount: expectedAmount }]);
+
+    const deltas = sumPaymentLegs(legs);
+    expect(deltas).toEqual([expectedAmount, -expectedAmount, 0, 0]);
+  });
+
+  it('starting from initialSeatTotals preserves the 4*startingPoints zero-sum invariant after applying legs', () => {
+    const initial = initialSeatTotals(DEFAULT_RULES);
+    const legs: PaymentLeg[] = [
+      { payerSeat: 1, payeeSeat: 0, amount: 8000 },
+      { payerSeat: 2, payeeSeat: 0, amount: 8000 },
+      { payerSeat: 3, payeeSeat: 0, amount: 8000 },
+    ];
+    const totals = sumPaymentLegs(legs, initial);
+    const expectedSum = 4 * DEFAULT_RULES.points.startingPoints;
+    expect(totals.reduce((a, b) => a + b, 0)).toBe(expectedSum);
+    expect(totals).toEqual([
+      DEFAULT_RULES.points.startingPoints + 24000,
+      DEFAULT_RULES.points.startingPoints - 8000,
+      DEFAULT_RULES.points.startingPoints - 8000,
+      DEFAULT_RULES.points.startingPoints - 8000,
+    ]);
+  });
+});
+
+describe('initialSeatTotals', () => {
+  it('returns startingPoints for all four seats', () => {
+    expect(initialSeatTotals(DEFAULT_RULES)).toEqual([100000, 100000, 100000, 100000]);
+  });
+
+  it('reflects a custom startingPoints override', () => {
+    const rules: RulesConfig = { ...DEFAULT_RULES, points: { ...DEFAULT_RULES.points, startingPoints: 25000 } };
+    expect(initialSeatTotals(rules)).toEqual([25000, 25000, 25000, 25000]);
+  });
+});
+
+describe('findBustedSeats', () => {
+  it('returns an empty array when all seats are positive', () => {
+    const totals: SeatTotals = [100, 200, 300, 400];
+    expect(findBustedSeats(totals)).toEqual([]);
+  });
+
+  it('includes a seat at exactly zero', () => {
+    const totals: SeatTotals = [100, 0, 300, 400];
+    expect(findBustedSeats(totals)).toEqual([1]);
+  });
+
+  it('returns multiple busted seats, in seat order, including negative totals', () => {
+    const totals: SeatTotals = [-50, 100, 0, -1];
+    expect(findBustedSeats(totals)).toEqual([0, 2, 3]);
+  });
+});
+
+describe('computeStandings', () => {
+  it('ranks by points descending with distinct places 1-4', () => {
+    const totals: SeatTotals = [100000, 130000, 90000, 80000];
+    const standings = computeStandings(totals);
+    expect(standings).toEqual([
+      { seat: 1, points: 130000, place: 1 },
+      { seat: 0, points: 100000, place: 2 },
+      { seat: 2, points: 90000, place: 3 },
+      { seat: 3, points: 80000, place: 4 },
+    ]);
+  });
+
+  it('breaks ties by lower seat index placing higher (East-most wins ties)', () => {
+    const totals: SeatTotals = [50000, 50000, 100000, 50000];
+    const standings = computeStandings(totals);
+    expect(standings).toEqual([
+      { seat: 2, points: 100000, place: 1 },
+      { seat: 0, points: 50000, place: 2 },
+      { seat: 1, points: 50000, place: 3 },
+      { seat: 3, points: 50000, place: 4 },
+    ]);
+  });
+
+  it('handles negative totals correctly', () => {
+    const totals: SeatTotals = [-10000, 5000, -20000, 0];
+    const standings = computeStandings(totals);
+    expect(standings).toEqual([
+      { seat: 1, points: 5000, place: 1 },
+      { seat: 3, points: 0, place: 2 },
+      { seat: 0, points: -10000, place: 3 },
+      { seat: 2, points: -20000, place: 4 },
+    ]);
   });
 });

@@ -1,9 +1,13 @@
 /**
- * Typed fetch wrapper around the /api/games/** routes. Pure client-side
- * plumbing: no React, no engine logic, no reads of session.ts — every
- * function takes whatever tokens it needs as explicit parameters so this
- * module stays trivially testable and has no hidden dependency on browser
- * storage.
+ * Typed fetch wrapper around the /api/games/**, /api/profiles/**, and
+ * /api/leaderboard/** routes. Pure client-side plumbing: no React, no engine
+ * logic. Every function takes whatever tokens it needs as explicit
+ * parameters so this module stays trivially testable and has no hidden
+ * dependency on browser storage — with ONE deliberate, documented exception:
+ * `ensureProfile` (ranked-ladder round, below) reads/writes
+ * `session.ts`'s `ProfileSession` by design, since its entire purpose is
+ * lazy profile-session bootstrapping (find-or-create-and-persist). Every
+ * other export in this file is still storage-free.
  *
  * Every route's exact success/error body shape was confirmed by reading the
  * live route handlers under src/app/api/games/** (not guessed):
@@ -16,6 +20,9 @@
  *  - POST /api/games/{code}/next-hand     → 200 bare ClientGameView (confirmed against the current route.ts source — NOT {seq, view}); 401 unauthorized;
  *                                            404 not-found; 409 {error:'hand-not-over'|'game-finished'} (a bare string, unlike actions' RuleError object);
  *                                            500 {error:{type:'internal-error',...}}.
+ *  - POST /api/profiles                   → 201 CreateProfileResponse; 400 {error:'displayName is required'} (confirmed against the live route.ts source).
+ *  - GET  /api/profiles/me                → 200 ProfileMeResponse; 401 {error:'unauthorized'}.
+ *  - GET  /api/leaderboard/apex           → 200 ApexLeaderboardResponse; no auth, no documented error body (confirmed against the live route.ts source).
  *
  * The 409 body shape differs by endpoint (RuleError object for actions,
  * plain reason strings for join and next-hand), so the shared `parseError`
@@ -24,14 +31,19 @@
  */
 
 import type {
+  ApexLeaderboardResponse,
   ClientGameView,
   CreateGameRequest,
   CreateGameResponse,
+  CreateProfileResponse,
   JoinGameRequest,
   JoinGameResponse,
+  ProfileMeResponse,
   SubmitActionResponse,
 } from './protocol';
 import type { GameAction, RuleError } from '../engine/game-state';
+import { loadProfileSession, saveProfileSession, type ProfileSession } from './session';
+import { RANKED_STRINGS } from './i18n/ranked';
 
 export type ApiResult<T> = { readonly ok: true; readonly data: T } | { readonly ok: false; readonly error: ApiError };
 
@@ -215,4 +227,87 @@ export async function advanceNextHand(code: string, token: string): Promise<ApiR
 
 export function gameStreamUrl(code: string, token: string, sinceSeq: number): string {
   return `/api/games/${encodeURIComponent(code)}/stream?since=${sinceSeq}&token=${encodeURIComponent(token)}`;
+}
+
+// --- Ranked ladder: profiles / leaderboard ----------------------------------------
+
+export async function createProfile(displayName: string): Promise<ApiResult<CreateProfileResponse>> {
+  const result = await doFetch(
+    '/api/profiles',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayName }),
+    },
+    'generic',
+  );
+  return result as ApiResult<CreateProfileResponse>;
+}
+
+export async function getMyProfile(profileToken: string): Promise<ApiResult<ProfileMeResponse>> {
+  const result = await doFetch('/api/profiles/me', { method: 'GET', headers: authHeaders(profileToken) }, 'generic');
+  return result as ApiResult<ProfileMeResponse>;
+}
+
+export async function getApexLeaderboard(): Promise<ApiResult<ApexLeaderboardResponse>> {
+  const result = await doFetch('/api/leaderboard/apex', { method: 'GET' }, 'generic');
+  return result as ApiResult<ApexLeaderboardResponse>;
+}
+
+/** A short random suffix so multiple lazily-created "Rookie Pilot" profiles stay distinguishable. */
+function randomDisplayNameSuffix(): string {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+/**
+ * Module-level in-flight guard for `ensureProfile`: without this, two
+ * callers racing before the same tick's first `createProfile` response lands
+ * (e.g. two components each doing lazy profile bootstrap on mount) would
+ * each see "no session yet" and each create a distinct server-side profile,
+ * silently orphaning whichever one loses the later `saveProfileSession`
+ * write. Sharing one in-flight promise across concurrent callers makes the
+ * second (and any later) caller await the first's outcome instead of
+ * starting its own `createProfile` call.
+ */
+let ensureProfileInFlight: Promise<string | null> | null = null;
+
+/**
+ * Lazily bootstraps a ranked profile: returns the existing `ProfileSession`'s
+ * token if one is already persisted, otherwise creates a fresh profile (using
+ * `displayName` if provided and non-blank, else a generated default —
+ * consistent with the "Rookie Pilot 1234"-style placeholder any anonymous
+ * player sees before typing their own name), persists it, and returns its
+ * token. Returns `null` only if profile creation itself failed (e.g.
+ * network error) — callers should treat that as "ranked features
+ * unavailable this session" rather than retry-looping.
+ *
+ * The one deliberate exception to this module's "no reads of session.ts"
+ * rule — see this file's header doc comment.
+ */
+export async function ensureProfile(displayName?: string): Promise<string | null> {
+  const existing = loadProfileSession();
+  if (existing !== null) return existing.profileToken;
+
+  if (ensureProfileInFlight !== null) return ensureProfileInFlight;
+
+  const bootstrap = async (): Promise<string | null> => {
+    const trimmed = displayName?.trim();
+    const name = trimmed !== undefined && trimmed.length > 0 ? trimmed : `${RANKED_STRINGS.defaultDisplayNamePrefix} ${randomDisplayNameSuffix()}`;
+
+    const result = await createProfile(name);
+    if (!result.ok) return null;
+
+    const session: ProfileSession = {
+      profileId: result.data.profileId,
+      profileToken: result.data.profileToken,
+      displayName: name,
+    };
+    saveProfileSession(session);
+    return session.profileToken;
+  };
+
+  ensureProfileInFlight = bootstrap().finally(() => {
+    ensureProfileInFlight = null;
+  });
+  return ensureProfileInFlight;
 }

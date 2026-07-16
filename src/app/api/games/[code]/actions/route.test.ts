@@ -4,7 +4,9 @@ import { getDb } from '@/server/db';
 import { runMigrations } from '@/server/migrations';
 import { createGame, joinGame } from '@/server/games';
 import { getCurrentHandState } from '@/server/replay';
+import { createProfile } from '@/server/ranked';
 import { appendStartHand } from '@/server/actions-log';
+import { DEFAULT_RULES, type RulesConfig } from '@/engine/rules-config';
 import type { ClientGameView, SubmitActionResponse } from '@/lib/protocol';
 import type { Seat } from '@/engine/seats';
 import { POST } from './route';
@@ -185,9 +187,9 @@ describe('POST /api/games/[code]/actions', () => {
     // the next player if nobody has any legal claim).
     expect(['awaiting-claims', 'awaiting-draw']).toContain(view.phase?.type);
     // Hand 1 hasn't finished yet, so every seat's match-points total is
-    // still zero.
+    // still exactly the configured starting pool.
     for (const player of view.players) {
-      expect(player.matchPoints).toBe(0);
+      expect(player.matchPoints).toBe(DEFAULT_RULES.points.startingPoints);
     }
   });
 
@@ -216,7 +218,152 @@ describe('POST /api/games/[code]/actions', () => {
     const winnerLeg = winPhase.result.legs.find((leg) => leg.payeeSeat === winnerSeat);
     if (winnerLeg === undefined) throw new Error('test fixture assumption broken: no leg for the winner');
 
-    expect(winView.players[winnerSeat].matchPoints).toBe(winnerLeg.amount);
-    expect(winView.players[winnerLeg.payerSeat].matchPoints).toBe(-winnerLeg.amount);
+    // Pool-scale (RULES.md §13): every seat starts at
+    // rules.points.startingPoints, so the winner's total is
+    // startingPoints + leg.amount and the payer's is startingPoints -
+    // leg.amount, never the bare delta amount itself.
+    expect(winView.players[winnerSeat].matchPoints).toBe(DEFAULT_RULES.points.startingPoints + winnerLeg.amount);
+    expect(winView.players[winnerLeg.payerSeat].matchPoints).toBe(
+      DEFAULT_RULES.points.startingPoints - winnerLeg.amount,
+    );
+  });
+
+  it(
+    "sets the response view's status to 'finished' the instant a winning action's own settlement " +
+      'busts a seat — no follow-up next-hand call needed to observe it',
+    async () => {
+      // startingPoints low enough that a single ordinary payment leg
+      // (basePoints 3000 + at least 1 tai * perTai 1000) drives the payer
+      // below zero.
+      const created = await createGame(db, {
+        displayName: 'Alice',
+        rules: { points: { startingPoints: 100 } } as Partial<RulesConfig>,
+      });
+      const j2 = await joinGame(db, created.roomCode, { displayName: 'Bob' });
+      const j3 = await joinGame(db, created.roomCode, { displayName: 'Carol' });
+      const j4 = await joinGame(db, created.roomCode, { displayName: 'Dave' });
+      if ('error' in j2 || 'error' in j3 || 'error' in j4) {
+        throw new Error('unexpected join error setting up fixture');
+      }
+      const tokens = [created.playerToken, j2.playerToken, j3.playerToken, j4.playerToken] as const;
+
+      // Reuses the known seed-44703/dealer-0 fixture: discarding 'tiao-7-4'
+      // leaves seat 2 with a real hu option.
+      await db.execute({ sql: 'DELETE FROM actions WHERE game_id = ?', args: [created.gameId] });
+      await appendStartHand(db, created.gameId, {
+        handNumber: 1,
+        dealerSeat: 0,
+        seed: 44703,
+        repeatCount: 0,
+        prevailingWind: 'east',
+      });
+
+      const discardResponse = await callActions(created.roomCode, tokens[0], {
+        type: 'discard',
+        seat: 0,
+        tileId: 'tiao-7-4',
+      });
+      expect(discardResponse.status).toBe(200);
+      const passResponse = await callActions(created.roomCode, tokens[1], { type: 'pass', seat: 1 });
+      expect(passResponse.status).toBe(200);
+      const winResponse = await callActions(created.roomCode, tokens[2], {
+        type: 'claim',
+        seat: 2,
+        claim: { type: 'hu' },
+      });
+      expect(winResponse.status).toBe(200);
+
+      const winBody = (await winResponse.json()) as SubmitActionResponse;
+      expect(winBody.view.phase?.type).toBe('hand-over');
+      expect(winBody.view.status).toBe('finished');
+
+      // The DB row itself was flipped too (not just the response view).
+      const gameRow = await db.execute({ sql: 'SELECT status FROM games WHERE id = ?', args: [created.gameId] });
+      expect(String(gameRow.rows[0].status)).toBe('finished');
+    },
+  );
+
+  it(
+    "includes a settled 'ranked' view in the winning submitter's own response the instant the match " +
+      'busts, when all 4 seats are linked to a profile',
+    async () => {
+      const profiles = await Promise.all([0, 1, 2, 3].map(async (i) => createProfile(db, `RankedPlayer${i}`)));
+
+      const created = await createGame(db, {
+        displayName: 'Alice',
+        rules: { points: { startingPoints: 100 } } as Partial<RulesConfig>,
+        profileId: profiles[0].profileId,
+      });
+      const j2 = await joinGame(db, created.roomCode, { displayName: 'Bob', profileId: profiles[1].profileId });
+      const j3 = await joinGame(db, created.roomCode, { displayName: 'Carol', profileId: profiles[2].profileId });
+      const j4 = await joinGame(db, created.roomCode, { displayName: 'Dave', profileId: profiles[3].profileId });
+      if ('error' in j2 || 'error' in j3 || 'error' in j4) {
+        throw new Error('unexpected join error setting up fixture');
+      }
+      const tokens = [created.playerToken, j2.playerToken, j3.playerToken, j4.playerToken] as const;
+
+      await db.execute({ sql: 'DELETE FROM actions WHERE game_id = ?', args: [created.gameId] });
+      await appendStartHand(db, created.gameId, {
+        handNumber: 1,
+        dealerSeat: 0,
+        seed: 44703,
+        repeatCount: 0,
+        prevailingWind: 'east',
+      });
+
+      await callActions(created.roomCode, tokens[0], { type: 'discard', seat: 0, tileId: 'tiao-7-4' });
+      await callActions(created.roomCode, tokens[1], { type: 'pass', seat: 1 });
+      const winResponse = await callActions(created.roomCode, tokens[2], {
+        type: 'claim',
+        seat: 2,
+        claim: { type: 'hu' },
+      });
+      expect(winResponse.status).toBe(200);
+
+      const winBody = (await winResponse.json()) as SubmitActionResponse;
+      expect(winBody.view.status).toBe('finished');
+      expect(winBody.view.ranked?.status).toBe('settled');
+      if (winBody.view.ranked?.status !== 'settled') throw new Error('expected settled ranked view');
+      expect(winBody.view.ranked.seats.length).toBe(4);
+      const winnerSeatResult = winBody.view.ranked.seats.find((s) => s.seat === 2);
+      expect(winnerSeatResult?.placement).toBe(1);
+      expect(winnerSeatResult?.rpDelta).toBeGreaterThan(0);
+
+      const historyRows = await db.execute({
+        sql: 'SELECT COUNT(*) AS n FROM rank_history WHERE game_id = ?',
+        args: [created.gameId],
+      });
+      expect(Number(historyRows.rows[0].n)).toBe(4);
+    },
+  );
+
+  it("omits a settled 'ranked' view (reports unranked) when a seat is unlinked, even once the match finishes", async () => {
+    const created = await createGame(db, {
+      displayName: 'Alice',
+      rules: { points: { startingPoints: 100 } } as Partial<RulesConfig>,
+    });
+    const j2 = await joinGame(db, created.roomCode, { displayName: 'Bob' });
+    const j3 = await joinGame(db, created.roomCode, { displayName: 'Carol' });
+    const j4 = await joinGame(db, created.roomCode, { displayName: 'Dave' });
+    if ('error' in j2 || 'error' in j3 || 'error' in j4) {
+      throw new Error('unexpected join error setting up fixture');
+    }
+    const tokens = [created.playerToken, j2.playerToken, j3.playerToken, j4.playerToken] as const;
+
+    await db.execute({ sql: 'DELETE FROM actions WHERE game_id = ?', args: [created.gameId] });
+    await appendStartHand(db, created.gameId, {
+      handNumber: 1,
+      dealerSeat: 0,
+      seed: 44703,
+      repeatCount: 0,
+      prevailingWind: 'east',
+    });
+    await callActions(created.roomCode, tokens[0], { type: 'discard', seat: 0, tileId: 'tiao-7-4' });
+    await callActions(created.roomCode, tokens[1], { type: 'pass', seat: 1 });
+    const winResponse = await callActions(created.roomCode, tokens[2], { type: 'claim', seat: 2, claim: { type: 'hu' } });
+
+    const winBody = (await winResponse.json()) as SubmitActionResponse;
+    expect(winBody.view.status).toBe('finished');
+    expect(winBody.view.ranked).toEqual({ status: 'unranked' });
   });
 });

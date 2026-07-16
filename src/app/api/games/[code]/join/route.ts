@@ -6,7 +6,8 @@
 
 import { getDb } from '@/server/db';
 import { joinGame } from '@/server/games';
-import type { JoinGameRequest, JoinGameResponse } from '@/lib/protocol';
+import { resolveProfileToken } from '@/server/ranked';
+import { isValidProfileToken, type JoinGameRequest, type JoinGameResponse } from '@/lib/protocol';
 
 export async function POST(
   request: Request,
@@ -24,9 +25,24 @@ export async function POST(
   if (typeof body.displayName !== 'string' || body.displayName.trim().length === 0) {
     return Response.json({ error: 'displayName is required' }, { status: 400 });
   }
+  if (!isValidProfileToken(body.profileToken)) {
+    return Response.json({ error: { type: 'validation-error', message: 'Invalid profileToken' } }, { status: 400 });
+  }
 
   const db = getDb();
-  const result = await joinGame(db, code, { displayName: body.displayName });
+
+  // Same "explicit-but-unresolvable token is a 401, never a silent
+  // downgrade to unranked" rule as POST /api/games.
+  let profileId: string | undefined;
+  if (typeof body.profileToken === 'string') {
+    const resolved = await resolveProfileToken(db, body.profileToken);
+    if (resolved === null) {
+      return Response.json({ error: 'unauthorized' }, { status: 401 });
+    }
+    profileId = resolved.profileId;
+  }
+
+  const result = await joinGame(db, code, { displayName: body.displayName, profileId });
 
   if ('error' in result) {
     const status = result.error === 'not-found' ? 404 : 409;

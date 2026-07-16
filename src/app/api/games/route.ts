@@ -7,7 +7,8 @@
 
 import { getDb } from '@/server/db';
 import { createGame } from '@/server/games';
-import { isValidRulesOverride, type CreateGameResponse } from '@/lib/protocol';
+import { resolveProfileToken } from '@/server/ranked';
+import { isValidProfileToken, isValidRulesOverride, type CreateGameResponse } from '@/lib/protocol';
 
 export async function POST(request: Request): Promise<Response> {
   let body: unknown;
@@ -20,7 +21,11 @@ export async function POST(request: Request): Promise<Response> {
   if (typeof body !== 'object' || body === null) {
     return Response.json({ error: 'invalid-json' }, { status: 400 });
   }
-  const { displayName, rules } = body as { displayName?: unknown; rules?: unknown };
+  const { displayName, rules, profileToken } = body as {
+    displayName?: unknown;
+    rules?: unknown;
+    profileToken?: unknown;
+  };
 
   if (typeof displayName !== 'string' || displayName.trim().length === 0) {
     return Response.json({ error: 'displayName is required' }, { status: 400 });
@@ -28,9 +33,25 @@ export async function POST(request: Request): Promise<Response> {
   if (!isValidRulesOverride(rules)) {
     return Response.json({ error: { type: 'validation-error', message: 'Invalid rules override' } }, { status: 400 });
   }
+  if (!isValidProfileToken(profileToken)) {
+    return Response.json({ error: { type: 'validation-error', message: 'Invalid profileToken' } }, { status: 400 });
+  }
 
   const db = getDb();
-  const result = await createGame(db, { displayName, rules });
+
+  // An explicitly-supplied but unresolvable profileToken is a 401, never a
+  // silent fall-through to an unranked game — the caller asked to be linked
+  // and that request must not be swallowed.
+  let profileId: string | undefined;
+  if (typeof profileToken === 'string') {
+    const resolved = await resolveProfileToken(db, profileToken);
+    if (resolved === null) {
+      return Response.json({ error: 'unauthorized' }, { status: 401 });
+    }
+    profileId = resolved.profileId;
+  }
+
+  const result = await createGame(db, { displayName, rules, profileId });
 
   const response: CreateGameResponse = {
     roomCode: result.roomCode,

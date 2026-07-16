@@ -5,7 +5,7 @@ import { appendStartHand } from './actions-log';
 import { advanceToNextHand, getCurrentHandState, getMatchSnapshot, submitAction } from './replay';
 import type { GameState, RuleError } from '../engine/game-state';
 import { DEFAULT_RULES, type RulesConfig } from '../engine/rules-config';
-import { sumPaymentLegs } from '../engine/scoring';
+import { initialSeatTotals, sumPaymentLegs } from '../engine/scoring';
 import type { Seat } from '../engine/seats';
 
 /**
@@ -86,15 +86,19 @@ describe('getMatchSnapshot — adversarial multi-hand accumulation', () => {
     if (hand2Phase.result.kind !== 'win') throw new Error('expected a win result for hand 2');
     const hand2Legs = hand2Phase.result.legs;
 
-    const expected = sumPaymentLegs(hand2Legs, sumPaymentLegs(hand1Legs));
+    const startingTotals = initialSeatTotals(DEFAULT_RULES);
+    const expected = sumPaymentLegs(hand2Legs, sumPaymentLegs(hand1Legs, startingTotals));
 
     const snapshot = await getMatchSnapshot(db, gameId);
     if (snapshot === null) throw new Error('expected a non-null snapshot');
     expect(snapshot.matchPoints).toEqual(expected);
-    // Since both hands used identical legs, the accumulated total must be
-    // exactly double each individual hand's totals (a real accumulation, not
-    // an accidental overwrite that would just equal a single hand's totals).
-    expect(snapshot.matchPoints).toEqual(sumPaymentLegs(hand1Legs).map((n) => n * 2));
+    // Since both hands used identical legs, the NET CHANGE from starting
+    // totals must be exactly double a single hand's own net change (a real
+    // accumulation across two hands, not an accidental overwrite that would
+    // just equal one hand's delta applied once).
+    const oneHandDelta = sumPaymentLegs(hand1Legs, startingTotals).map((n, i) => n - startingTotals[i]);
+    const actualDelta = snapshot.matchPoints.map((n, i) => n - startingTotals[i]);
+    expect(actualDelta).toEqual(oneHandDelta.map((n) => n * 2));
     expect(snapshot.handNumber).toBe(2);
   });
 
@@ -130,7 +134,7 @@ describe('getMatchSnapshot — adversarial multi-hand accumulation', () => {
 
     const hand1Phase = await playWinningHand(db, gameId, 1);
     if (hand1Phase.result.kind !== 'win') throw new Error('expected a win result for hand 1');
-    const expectedFromHand1 = sumPaymentLegs(hand1Phase.result.legs);
+    const expectedFromHand1 = sumPaymentLegs(hand1Phase.result.legs, initialSeatTotals(DEFAULT_RULES));
 
     // Start hand 2 but leave it mid-hand (just the start-hand row, no
     // discard/claim yet) — a real in-progress, not-yet-hand-over hand.
@@ -177,7 +181,7 @@ describe('getMatchSnapshot — adversarial multi-hand accumulation', () => {
 
     const snapshotAfterDraw = await getMatchSnapshot(db, gameId);
     if (snapshotAfterDraw === null) throw new Error('expected a non-null snapshot');
-    expect(snapshotAfterDraw.matchPoints).toEqual([0, 0, 0, 0]);
+    expect(snapshotAfterDraw.matchPoints).toEqual(initialSeatTotals(rules));
     expect(snapshotAfterDraw.handNumber).toBe(2);
   });
 });

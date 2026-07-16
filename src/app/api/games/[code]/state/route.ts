@@ -8,8 +8,9 @@
 import { getDb } from '@/server/db';
 import { getGameByRoomCode, listPlayers, resolvePlayerToken } from '@/server/games';
 import { getMatchSnapshot } from '@/server/replay';
+import { getRankedResultForGame, settleRankedMatch } from '@/server/ranked';
 import { toClientView } from '@/server/views';
-import type { ClientGameView, ClientPlayerView } from '@/lib/protocol';
+import type { ClientGameView, ClientPlayerView, ClientRankedResultView } from '@/lib/protocol';
 import type { Seat } from '@/engine/seats';
 
 /** Duplicated per-route-file convention (see src/engine/*.test.ts). */
@@ -26,6 +27,7 @@ function waitingForPlayersView(
   players: readonly { seat: Seat; displayName: string }[],
   viewerSeat: Seat | null,
   seq: number,
+  startingPoints: number,
 ): ClientGameView {
   const nameBySeat = new Map(players.map((p) => [p.seat, p.displayName]));
   const clientPlayers: ClientPlayerView[] = ([0, 1, 2, 3] as const).map((seat) => ({
@@ -39,7 +41,11 @@ function waitingForPlayersView(
     flowers: [],
     discards: [],
     barredVisible: null,
-    matchPoints: 0,
+    // Seeded with the match's configured starting pool (RULES.md §13,
+    // Mahjong-Soul-style pool scoring — see scoring.ts's initialSeatTotals),
+    // not 0: no hand has been folded yet, but every seat's real starting
+    // total is `rules.points.startingPoints`, never zero.
+    matchPoints: startingPoints,
   }));
 
   return {
@@ -99,7 +105,38 @@ export async function GET(
     // this phase). Reporting the seq of the read we actually performed can
     // only be stale-low, never falsely-ahead, which is always safe: the
     // client's stream cursor will simply be notified on the next real seq.
-    return Response.json(waitingForPlayersView(code, status, players, viewerSeat, 0), { status: 200 });
+    return Response.json(
+      waitingForPlayersView(code, status, players, viewerSeat, 0, game.rules.points.startingPoints),
+      { status: 200 },
+    );
+  }
+
+  // Observer-healing path: a spectator/player who never submitted the
+  // finishing action still needs to see the ranked result once the game is
+  // finished — settleRankedMatch's own cheap-path-first design (see
+  // src/server/ranked.ts) makes this safe to call on every poll.
+  //
+  // settleRankedMatch can throw (see its doc comment's "per-seat error
+  // isolation" — one permanently-broken seat still surfaces as an error, by
+  // design, so it isn't silently invisible). That must never crash this
+  // route's whole response: the rest of the game view is still valid and
+  // worth returning even if ranked settlement hiccups. Fall back to a
+  // read-only, always-safe getRankedResultForGame (never triggers
+  // settlement itself, so it can't throw the same way) to still surface
+  // whatever ranked result already exists; if even that fails, omit
+  // `ranked` entirely rather than fail the request.
+  let ranked: ClientRankedResultView | undefined;
+  if (status === 'finished') {
+    try {
+      ranked = await settleRankedMatch(db, game.gameId);
+    } catch (err) {
+      console.error(`[ranked] settleRankedMatch failed for game ${game.gameId}:`, err);
+      try {
+        ranked = await getRankedResultForGame(db, game.gameId);
+      } catch (fallbackErr) {
+        console.error(`[ranked] getRankedResultForGame fallback also failed for game ${game.gameId}:`, fallbackErr);
+      }
+    }
   }
 
   // Every field below comes from this ONE getMatchSnapshot read (state,
@@ -116,6 +153,7 @@ export async function GET(
     snapshot.prevailingWind,
     snapshot.lastSeq,
     snapshot.matchPoints,
+    ranked,
   );
 
   return Response.json(view, { status: 200 });

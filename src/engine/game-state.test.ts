@@ -415,7 +415,7 @@ describe('declare-hu (self-draw)', () => {
     expect(winners).toEqual([{ seat: 0, winType: 'self-draw', handTai: 1, winningTile: expect.objectContaining({ id: winningTile.id }) }]);
     expect(legs).toHaveLength(3);
     const dealerTai = computeDealerTai(2, DEFAULT_RULES);
-    const expectedAmount = DEFAULT_RULES.basePoints + (1 + dealerTai) * DEFAULT_RULES.pointsPerTai;
+    const expectedAmount = DEFAULT_RULES.points.basePoints + (1 + dealerTai) * DEFAULT_RULES.points.perTai;
     for (const leg of legs) {
       expect(leg.payeeSeat).toBe(0);
       expect(leg.amount).toBe(expectedAmount);
@@ -489,7 +489,7 @@ describe('claim window resolution', () => {
     expect(result.phase.result.legs[0]).toEqual({
       payerSeat: 0,
       payeeSeat: 1,
-      amount: DEFAULT_RULES.basePoints + dealerTai * DEFAULT_RULES.pointsPerTai,
+      amount: DEFAULT_RULES.points.basePoints + dealerTai * DEFAULT_RULES.points.perTai,
     });
   });
 
@@ -1259,7 +1259,7 @@ describe('full hand via rigged wall', () => {
       throw new Error('expected a win result');
     }
     const dealerTai = computeDealerTai(1, rules);
-    const expectedAmount = rules.basePoints + (rules.selfDrawTai + dealerTai) * rules.pointsPerTai;
+    const expectedAmount = rules.points.basePoints + (rules.selfDrawTai + dealerTai) * rules.points.perTai;
     expect(result.phase.result.legs).toHaveLength(3);
     for (const leg of result.phase.result.legs) {
       expect(leg.amount).toBe(expectedAmount);
@@ -1306,7 +1306,7 @@ describe('full hand via rigged wall', () => {
     ]);
     const dealerTai = computeDealerTai(0, rules);
     expect(result.phase.result.legs).toEqual([
-      { payerSeat: 0, payeeSeat: 1, amount: rules.basePoints + dealerTai * rules.pointsPerTai },
+      { payerSeat: 0, payeeSeat: 1, amount: rules.points.basePoints + dealerTai * rules.points.perTai },
     ]);
     expect(result.phase.result.nextDealerSeat).toBe(1);
     expect(result.phase.result.nextRepeatCount).toBe(0);

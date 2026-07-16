@@ -3,6 +3,7 @@ import type { Client } from '@libsql/client';
 import { getDb } from '@/server/db';
 import { runMigrations } from '@/server/migrations';
 import { getGameByRoomCode } from '@/server/games';
+import { createProfile } from '@/server/ranked';
 import type { CreateGameResponse } from '@/lib/protocol';
 import { POST } from './route';
 
@@ -117,6 +118,37 @@ describe('POST /api/games', () => {
       // check available here is that the response itself carries no room code.
       const body = (await response.json()) as { roomCode?: string };
       expect(body.roomCode).toBeUndefined();
+    });
+  });
+
+  describe('profileToken (ranked linking)', () => {
+    it('links the creator seat 0 to a profile when a valid profileToken is given', async () => {
+      const profile = await createProfile(db, 'Alice');
+      const response = await POST(jsonRequest({ displayName: 'Alice', profileToken: profile.secretToken }));
+      expect(response.status).toBe(201);
+
+      const body = (await response.json()) as CreateGameResponse;
+      const gameRow = await db.execute({ sql: 'SELECT id FROM games WHERE room_code = ?', args: [body.roomCode] });
+      const playerRow = await db.execute({
+        sql: 'SELECT profile_id FROM players WHERE game_id = ? AND seat = 0',
+        args: [String(gameRow.rows[0].id)],
+      });
+      expect(String(playerRow.rows[0].profile_id)).toBe(profile.profileId);
+    });
+
+    it('returns 401 (never silently unranked) when an explicit profileToken does not resolve', async () => {
+      const response = await POST(jsonRequest({ displayName: 'Mallory', profileToken: 'not-a-real-token' }));
+      expect(response.status).toBe(401);
+    });
+
+    it('rejects an empty-string profileToken with a clean 400', async () => {
+      const response = await POST(jsonRequest({ displayName: 'Mallory', profileToken: '' }));
+      expect(response.status).toBe(400);
+    });
+
+    it('creates a normal unranked game when profileToken is omitted', async () => {
+      const response = await POST(jsonRequest({ displayName: 'Alice' }));
+      expect(response.status).toBe(201);
     });
   });
 });

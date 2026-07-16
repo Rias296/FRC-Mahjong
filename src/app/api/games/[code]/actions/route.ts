@@ -8,10 +8,11 @@
 
 import { getDb } from '@/server/db';
 import { getGameByRoomCode, listPlayers, resolvePlayerToken } from '@/server/games';
-import { getMatchSnapshot, submitAction } from '@/server/replay';
+import { finalizeMatchIfOver, getMatchSnapshot, submitAction } from '@/server/replay';
+import { getRankedResultForGame, settleRankedMatch } from '@/server/ranked';
 import type { GameAction, GameState, RuleError } from '@/engine/game-state';
 import { toClientView } from '@/server/views';
-import { isValidGameAction, type SubmitActionResponse } from '@/lib/protocol';
+import { isValidGameAction, type ClientRankedResultView, type SubmitActionResponse } from '@/lib/protocol';
 
 /** Route-local shape check, used only to safely reach into a parsed-JSON `unknown` body. */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -135,7 +136,49 @@ export async function POST(
   }
 
   const players = await listPlayers(db, game.gameId);
-  const status = game.status as 'waiting-for-players' | 'in-progress' | 'finished';
+
+  // If this action's own settlement just ended the match (a hand-over that
+  // busts a seat, or exhausts the wind table), flip games.status eagerly
+  // right here rather than waiting for a follow-up 'next-hand' call — see
+  // finalizeMatchIfOver's doc comment. Falls back to the pre-write
+  // game.status for every other case (no hand-over, or a hand-over that
+  // doesn't end the match), which matches the prior behavior exactly.
+  let status: 'waiting-for-players' | 'in-progress' | 'finished' = game.status as
+    | 'waiting-for-players'
+    | 'in-progress'
+    | 'finished';
+  if (snapshot.state.phase.type === 'hand-over') {
+    const finalization = await finalizeMatchIfOver(db, game.gameId, snapshot);
+    if (finalization === 'finished') {
+      status = 'finished';
+    }
+  }
+
+  // If this action's own settlement just ended the match (or it was already
+  // finished from a prior call), settle/resolve the ranked result eagerly
+  // right here, so the winning submitter's own response already carries the
+  // ranked deltas — mirrors finalizeMatchIfOver's "surface it in this same
+  // response" design above. settleRankedMatch's own cheap-path-first design
+  // (see src/server/ranked.ts) makes this safe to call unconditionally
+  // whenever status === 'finished', not just on the very first settling call.
+  //
+  // Same defensive wrapping as GET /state (see that route's comment):
+  // settleRankedMatch can throw by design (per-seat error isolation), and
+  // that must never crash this route's own successful action response — the
+  // action itself already succeeded and its view is still worth returning.
+  let ranked: ClientRankedResultView | undefined;
+  if (status === 'finished') {
+    try {
+      ranked = await settleRankedMatch(db, game.gameId);
+    } catch (err) {
+      console.error(`[ranked] settleRankedMatch failed for game ${game.gameId}:`, err);
+      try {
+        ranked = await getRankedResultForGame(db, game.gameId);
+      } catch (fallbackErr) {
+        console.error(`[ranked] getRankedResultForGame fallback also failed for game ${game.gameId}:`, fallbackErr);
+      }
+    }
+  }
 
   const view = toClientView(
     snapshot.state,
@@ -147,6 +190,7 @@ export async function POST(
     snapshot.prevailingWind,
     snapshot.lastSeq,
     snapshot.matchPoints,
+    ranked,
   );
 
   const response: SubmitActionResponse = { seq: snapshot.lastSeq, view };

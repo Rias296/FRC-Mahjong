@@ -52,3 +52,6 @@ docs/.obsidian/
 # local dev database
 dev-local.db
 dev-local.db-*
+
+# graphify knowledge-graph output (regeneratable)
+graphify-out/

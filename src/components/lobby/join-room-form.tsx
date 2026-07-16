@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Field, FieldGroup, FieldLabel, FieldError } from '@/components/ui/field';
-import { joinGame } from '@/lib/api-client';
+import { ensureProfile, joinGame } from '@/lib/api-client';
 import { saveSession, type GameSession } from '@/lib/session';
 import { normalizeRoomCode, isValidRoomCode } from '@/lib/room-code';
 import { LOBBY_STRINGS } from '@/lib/i18n/lobby';
@@ -47,7 +47,12 @@ export function JoinRoomForm({ initialCode, lockCode = false, onJoined }: JoinRo
 
     setSubmitting(true);
     try {
-      const result = await joinGame(normalizedCode, { displayName: trimmedName });
+      // Best-effort: an unavailable ranked profile (e.g. offline) must never
+      // block joining a casual match — ensureProfile returns null rather
+      // than throwing, and `profileToken: undefined` just means this match
+      // settles unranked for this seat.
+      const profileToken = (await ensureProfile(trimmedName)) ?? undefined;
+      const result = await joinGame(normalizedCode, { displayName: trimmedName, profileToken });
       if (result.ok) {
         const session: GameSession = {
           roomCode: normalizedCode,

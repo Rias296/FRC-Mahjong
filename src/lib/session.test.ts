@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearSession, loadSession, saveSession, type GameSession } from './session';
+import {
+  clearProfileSession,
+  clearSession,
+  loadProfileSession,
+  loadSession,
+  saveProfileSession,
+  saveSession,
+  type GameSession,
+  type ProfileSession,
+} from './session';
 
 const STORAGE_KEY = 'frc-mahjong:session:v1';
+const PROFILE_STORAGE_KEY = 'frc-mahjong:profile:v1';
 
 class FakeLocalStorage implements Storage {
   private store = new Map<string, string>();
@@ -35,6 +45,12 @@ const sampleSession: GameSession = {
   roomCode: 'ABCD',
   seat: 1,
   playerToken: 'token-123',
+  displayName: 'Alice',
+};
+
+const sampleProfileSession: ProfileSession = {
+  profileId: 'profile-abc',
+  profileToken: 'profile-token-123',
   displayName: 'Alice',
 };
 
@@ -83,6 +99,56 @@ describe('session (with a simulated browser window)', () => {
     });
     expect(() => saveSession(sampleSession)).not.toThrow();
   });
+
+  it('saveProfileSession then loadProfileSession round-trips a ProfileSession', () => {
+    saveProfileSession(sampleProfileSession);
+    expect(loadProfileSession()).toEqual(sampleProfileSession);
+  });
+
+  it('loadProfileSession returns null when no profile session is stored', () => {
+    expect(loadProfileSession()).toBeNull();
+  });
+
+  it('loadProfileSession clears and returns null on corrupt JSON', () => {
+    fakeStorage.setItem(PROFILE_STORAGE_KEY, '{not valid json');
+    expect(loadProfileSession()).toBeNull();
+    expect(fakeStorage.getItem(PROFILE_STORAGE_KEY)).toBeNull();
+  });
+
+  it('loadProfileSession clears and returns null on invalid shape (missing profileToken)', () => {
+    fakeStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify({ profileId: 'p1', displayName: 'Alice' }));
+    expect(loadProfileSession()).toBeNull();
+    expect(fakeStorage.getItem(PROFILE_STORAGE_KEY)).toBeNull();
+  });
+
+  it('clearProfileSession removes the stored key', () => {
+    saveProfileSession(sampleProfileSession);
+    clearProfileSession();
+    expect(fakeStorage.getItem(PROFILE_STORAGE_KEY)).toBeNull();
+  });
+
+  it('saveProfileSession does not throw when localStorage.setItem throws', () => {
+    vi.spyOn(fakeStorage, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceededError');
+    });
+    expect(() => saveProfileSession(sampleProfileSession)).not.toThrow();
+  });
+
+  it('ProfileSession and GameSession are stored under separate keys — saving one never disturbs the other', () => {
+    saveSession(sampleSession);
+    saveProfileSession(sampleProfileSession);
+    expect(loadSession()).toEqual(sampleSession);
+    expect(loadProfileSession()).toEqual(sampleProfileSession);
+
+    clearProfileSession();
+    expect(loadSession()).toEqual(sampleSession);
+    expect(loadProfileSession()).toBeNull();
+
+    saveProfileSession(sampleProfileSession);
+    clearSession();
+    expect(loadSession()).toBeNull();
+    expect(loadProfileSession()).toEqual(sampleProfileSession);
+  });
 });
 
 describe('session (SSR — window undefined)', () => {
@@ -98,5 +164,11 @@ describe('session (SSR — window undefined)', () => {
     expect(loadSession()).toBeNull();
     expect(() => saveSession(sampleSession)).not.toThrow();
     expect(() => clearSession()).not.toThrow();
+  });
+
+  it('all ProfileSession functions are safe no-ops when window is undefined', () => {
+    expect(loadProfileSession()).toBeNull();
+    expect(() => saveProfileSession(sampleProfileSession)).not.toThrow();
+    expect(() => clearProfileSession()).not.toThrow();
   });
 });

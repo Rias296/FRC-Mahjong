@@ -1,7 +1,7 @@
 import { Badge } from '@/components/ui/badge';
 import { FaceDownTile, TileFace } from './tile-face';
 import { meldFaceDown } from '@/lib/table/tile-display';
-import { seatLabel } from '@/lib/theme/frc';
+import { formatMatchPoints, seatLabel } from '@/lib/theme/frc';
 import { TABLE_STRINGS } from '@/lib/i18n/table';
 import { cn } from '@/lib/utils';
 import type { ClientPlayerView } from '@/lib/protocol';
@@ -31,6 +31,10 @@ export function OpponentPanel({ player, isCurrentTurn, isDealer }: OpponentPanel
           </Badge>
         )}
       </div>
+
+      <span className="font-hud text-xs text-accent">
+        {formatMatchPoints(player.matchPoints)} {TABLE_STRINGS.pointsUnitLabel}
+      </span>
 
       <div className="flex flex-wrap items-center justify-center gap-0.5">
         {Array.from({ length: player.concealedCount }, (_, i) => (

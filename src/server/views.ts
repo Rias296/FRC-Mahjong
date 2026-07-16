@@ -23,6 +23,7 @@ import type {
   ClientMeld,
   ClientPhaseView,
   ClientPlayerView,
+  ClientRankedResultView,
   ClientTile,
   PrevailingWind,
 } from '../lib/protocol';
@@ -159,6 +160,13 @@ function redactPhase(state: GameState, viewerSeat: Seat | null): ClientPhaseView
  * Builds the redacted, per-viewer ClientGameView for `state`. `viewerSeat`
  * is null for a spectator/unauthenticated view (isViewer is then false for
  * every seat, and every viewer-gated field redacts to its "not you" case).
+ *
+ * `ranked` is an additive, optional trailing parameter (default `undefined`,
+ * matching the "only meaningfully present when status === 'finished'" field
+ * doc on `ClientGameView.ranked`) — existing call sites that don't pass it
+ * are unaffected. Already fully redacted by the time it reaches here (see
+ * `src/server/ranked.ts`'s `RankedResultView` doc comment); this function
+ * passes it through verbatim, never reads raw RP off it.
  */
 export function toClientView(
   state: GameState,
@@ -170,6 +178,7 @@ export function toClientView(
   prevailingWind: PrevailingWind | null,
   seq: number,
   matchPoints: SeatTotals,
+  ranked?: ClientRankedResultView,
 ): ClientGameView {
   const nameBySeat = new Map(players.map((p) => [p.seat, p.displayName]));
 
@@ -190,5 +199,6 @@ export function toClientView(
     currentTurnSeat: state.currentTurnSeat,
     dealerSeat: state.dealerSeat,
     repeatCount: state.repeatCount,
+    ranked,
   };
 }

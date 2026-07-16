@@ -662,7 +662,7 @@ describe('multipleWinners=true with the dealer as one of several winners', () =>
     const dealerTai = computeDealerTai(0, rules);
     const legToDealer = result.phase.result.legs.find((l) => l.payeeSeat === 0);
     const legToSeat2 = result.phase.result.legs.find((l) => l.payeeSeat === 2);
-    expect(legToDealer?.amount).toBe(rules.basePoints + dealerTai * rules.pointsPerTai);
-    expect(legToSeat2?.amount).toBe(rules.basePoints); // neither payer(1) nor winner(2) is the dealer
+    expect(legToDealer?.amount).toBe(rules.points.basePoints + dealerTai * rules.points.perTai);
+    expect(legToSeat2?.amount).toBe(rules.points.basePoints); // neither payer(1) nor winner(2) is the dealer
   });
 });

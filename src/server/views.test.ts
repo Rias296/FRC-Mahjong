@@ -15,7 +15,8 @@ import type { Seat } from '../engine/seats';
 import type { Wall } from '../engine/wall';
 import type { PlayerHand, PlayerMeld } from '../engine/actions';
 import { DEFAULT_RULES } from '../engine/rules-config';
-import type { PaymentLeg, SeatTotals } from '../engine/scoring';
+import { initialSeatTotals, sumPaymentLegs, type PaymentLeg, type SeatTotals } from '../engine/scoring';
+import type { ClientGameView } from '../lib/protocol';
 
 // --- Test-local tile builder (duplicated per-file convention, see game-state.test.ts) ---
 const WINDS: readonly WindName[] = ['east', 'south', 'west', 'north'];
@@ -928,5 +929,141 @@ describe('toClientView: matchPoints — fully public, no redaction', () => {
     expect(asViewer.players[0].concealedTiles).not.toBeNull();
     expect(asOpponent.players[0].concealedTiles).toBeNull();
     expect(asSpectator.players[0].concealedTiles).toBeNull();
+  });
+
+  it('passes through pool-scale matchPoints values (100000-point starting pool, RULES.md §13) unchanged, not scaled or clamped', () => {
+    const state = stateWith({});
+    // A realistic pool-scale snapshot: every seat starts at
+    // DEFAULT_RULES.points.startingPoints (100000), and a single payment leg
+    // (basePoints 3000 + tai * perTai 1000) has been folded in.
+    const startingTotals = initialSeatTotals(DEFAULT_RULES);
+    const legs: PaymentLeg[] = [{ payerSeat: 1 as Seat, payeeSeat: 0 as Seat, amount: 6000 }];
+    const matchPoints: SeatTotals = sumPaymentLegs(legs, startingTotals);
+
+    const result = view(state, null, 1, matchPoints);
+    expect(result.players.map((p) => p.matchPoints)).toEqual([106000, 94000, 100000, 100000]);
+    // Sanity: these are genuinely pool-scale (5-6 digit) numbers, not the
+    // small delta-scale values used elsewhere in this describe block.
+    expect(result.players[0].matchPoints).toBeGreaterThan(100000);
+    expect(result.players[1].matchPoints).toBeLessThan(100000);
+  });
+
+  // Tester round 4 (match-points HUD / MatchStandings): match-standings.tsx
+  // assumes `ClientGameView.players` is already East=0..North=3 ordered and
+  // reduces it straight into a seat-indexed SeatTotals tuple with no
+  // resorting. That assumption is only safe because `toClientView` builds
+  // `clientPlayers` via `SEATS.map(...)` (views.ts), NOT by mapping over the
+  // caller-supplied `players` roster array — so the roster's own order (e.g.
+  // lobby-join order, DB row order) must never leak through. This test
+  // deliberately passes a `players` roster in a scrambled, non-seat order
+  // (and even omits a seat) and pins that the output is still East..North.
+  it('always returns players in seat order (East=0..North=3), independent of the caller-supplied roster array order', () => {
+    const state = stateWith({});
+    const matchPoints: SeatTotals = [1, 2, 3, 4];
+    const scrambledRoster = [
+      { seat: 3 as Seat, displayName: 'North-Dave' },
+      { seat: 1 as Seat, displayName: 'South-Bob' },
+      { seat: 0 as Seat, displayName: 'East-Alice' },
+      // Seat 2 (West) deliberately omitted to also confirm the "occupied"
+      // fallback doesn't perturb ordering.
+    ];
+
+    const result = toClientView(state, null, scrambledRoster, 'ABC123', 'finished', 5, 'east', 1, matchPoints);
+
+    expect(result.players.map((p) => p.seat)).toEqual([0, 1, 2, 3]);
+    expect(result.players.map((p) => p.matchPoints)).toEqual([1, 2, 3, 4]);
+    expect(result.players[0].displayName).toBe('East-Alice');
+    expect(result.players[1].displayName).toBe('South-Bob');
+    expect(result.players[3].displayName).toBe('North-Dave');
+    expect(result.players[2].occupied).toBe(false);
+  });
+});
+
+describe('toClientView: ranked field — additive, pass-through, no exact-RP leak', () => {
+  it('is undefined when the caller does not supply it — every existing call site is unaffected — and JSON-serializes to no key at all', () => {
+    const state = stateWith({});
+    const result = view(state, 0 as Seat);
+    expect(result.ranked).toBeUndefined();
+    // JSON.stringify drops keys whose value is undefined, so an existing
+    // (pre-ranked-round) API consumer sees no 'ranked' key on the wire at all.
+    expect(JSON.parse(JSON.stringify(result))).not.toHaveProperty('ranked');
+  });
+
+  it('passes an unranked/pending ranked view through verbatim', () => {
+    const state = stateWith({});
+    const result = toClientView(
+      state,
+      0 as Seat,
+      PLAYERS,
+      'ABC123',
+      'in-progress',
+      3,
+      'east',
+      1,
+      SAMPLE_MATCH_POINTS,
+      { status: 'pending' },
+    );
+    expect(result.ranked).toEqual({ status: 'pending' });
+  });
+
+  it('passes a settled ranked view through identically for the viewer, an opponent, and a spectator', () => {
+    const state = stateWith({});
+    const ranked: ClientGameView['ranked'] = {
+      status: 'settled',
+      seats: [
+        { seat: 0 as Seat, placement: 1, tier: 'bronze', division: 2, rpDelta: 120, promotedToApex: false },
+        { seat: 1 as Seat, placement: 2, tier: 'bronze', division: 3, rpDelta: 60, promotedToApex: false },
+        { seat: 2 as Seat, placement: 3, tier: 'silver', division: 1, rpDelta: 5, promotedToApex: false },
+        { seat: 3 as Seat, placement: 4, tier: 'gold', division: null, rpDelta: -150, promotedToApex: true },
+      ],
+    };
+
+    for (const viewer of [0, 1, 2, 3, null] as (Seat | null)[]) {
+      const result = toClientView(
+        state,
+        viewer,
+        PLAYERS,
+        'ABC123',
+        'finished',
+        3,
+        'east',
+        1,
+        SAMPLE_MATCH_POINTS,
+        ranked,
+      );
+      expect(result.ranked).toEqual(ranked);
+    }
+  });
+
+  // Redaction guard: no ClientGameView field — not `ranked`, not anywhere
+  // else on the view — may ever carry an exact/running RP total (only a
+  // per-match `rpDelta` is public; the exact total is private to the
+  // profile owner via a separate, dedicated endpoint). This walks the
+  // serialized view looking for any property NAMED like a running RP total.
+  it('never leaks an exact/running rankPoints or rpBefore/rpAfter total anywhere on the view, only per-match rpDelta', () => {
+    const state = stateWith({});
+    const ranked: ClientGameView['ranked'] = {
+      status: 'settled',
+      seats: [
+        { seat: 0 as Seat, placement: 1, tier: 'apex', division: null, rpDelta: 70, promotedToApex: false },
+        { seat: 1 as Seat, placement: 2, tier: 'apex', division: null, rpDelta: 35, promotedToApex: false },
+        { seat: 2 as Seat, placement: 3, tier: 'apex', division: null, rpDelta: -30, promotedToApex: false },
+        { seat: 3 as Seat, placement: 4, tier: 'apex', division: null, rpDelta: -180, promotedToApex: false },
+      ],
+    };
+    const result = toClientView(state, 0 as Seat, PLAYERS, 'ABC123', 'finished', 3, 'east', 1, SAMPLE_MATCH_POINTS, ranked);
+
+    const forbiddenKeyPattern = /rankPoints|rpBefore|rpAfter|^rp$/i;
+    const seen = new Set<unknown>();
+    function walk(value: unknown): void {
+      if (value === null || typeof value !== 'object') return;
+      if (seen.has(value)) return;
+      seen.add(value);
+      for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+        expect(forbiddenKeyPattern.test(key)).toBe(false);
+        walk(child);
+      }
+    }
+    walk(result);
   });
 });

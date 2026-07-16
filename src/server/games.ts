@@ -7,7 +7,7 @@
 
 import { LibsqlError, type Client } from '@libsql/client';
 import { randomBytes, randomInt } from 'node:crypto';
-import { DEFAULT_RULES, type RulesConfig } from '../engine/rules-config';
+import { DEFAULT_RULES, normalizeRules, type RulesConfig } from '../engine/rules-config';
 import type { Seat } from '../engine/seats';
 import { appendStartHand } from './actions-log';
 
@@ -36,6 +36,22 @@ function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Error && /UNIQUE constraint failed/i.test(err.message);
 }
 
+/**
+ * True specifically for a violation of the ranked-ladder partial unique index
+ * `idx_players_one_profile_per_game` (players(game_id, profile_id) WHERE
+ * profile_id IS NOT NULL) — i.e. this profile is already linked to a
+ * DIFFERENT seat in the same game — as opposed to the pre-existing
+ * UNIQUE(game_id, seat) violation (a genuine seat race). SQLite's own error
+ * message lists the exact column(s) the violated constraint/index covers
+ * (e.g. "UNIQUE constraint failed: players.game_id, players.profile_id" vs
+ * "...players.game_id, players.seat"), which is a reliable way to
+ * disambiguate the two WITHOUT an extra round-trip query.
+ */
+function isProfileLinkConstraintError(err: unknown): boolean {
+  if (!(err instanceof LibsqlError)) return false;
+  return err.code.startsWith('SQLITE_CONSTRAINT') && /players\.profile_id/i.test(err.message);
+}
+
 function generateRoomCode(): string {
   let code = '';
   for (let i = 0; i < ROOM_CODE_LENGTH; i++) {
@@ -44,14 +60,20 @@ function generateRoomCode(): string {
   return code;
 }
 
+/**
+ * Deep-merges a client-supplied partial rules override over `DEFAULT_RULES`.
+ * Delegates entirely to `normalizeRules` (src/engine/rules-config.ts) rather
+ * than reimplementing the nested-merge logic here a second time — this used
+ * to do its own flat `{ ...DEFAULT_RULES, ...overrides }` spread with only
+ * `robKong`/`sacredDiscard` explicitly deep-merged, which silently dropped
+ * `points.basePoints`/`points.perTai` to `undefined` whenever a caller sent a
+ * *partial* `points` override (legal per `isValidRulesOverride`), corrupting
+ * every payment leg for the game's entire lifetime once persisted. See
+ * docs/DECISIONS.md's match-points round 2/3 entries.
+ */
 function mergeRules(overrides?: Partial<RulesConfig>): RulesConfig {
   if (!overrides) return DEFAULT_RULES;
-  return {
-    ...DEFAULT_RULES,
-    ...overrides,
-    robKong: { ...DEFAULT_RULES.robKong, ...overrides.robKong },
-    sacredDiscard: { ...DEFAULT_RULES.sacredDiscard, ...overrides.sacredDiscard },
-  };
+  return normalizeRules(overrides);
 }
 
 export interface CreateGameResult {
@@ -65,16 +87,25 @@ export interface CreateGameResult {
 /**
  * Creates a game (status `waiting-for-players`) and seats the creator at
  * seat 0. Retries room-code generation (bounded) on a UNIQUE collision.
+ *
+ * `profileId`, when present, links the creator's seat-0 row to a ranked
+ * profile. No profile-link-collision handling is needed here (unlike
+ * `joinGame`): `gameId` is freshly generated on every call, so this is
+ * always the very first (and only) `players` row inserted for it — the
+ * `idx_players_one_profile_per_game` partial index can only ever be violated
+ * by a SECOND seat in the SAME game linking the same profile, which cannot
+ * happen on a game's very first insert.
  */
 export async function createGame(
   db: Client,
-  params: { displayName: string; rules?: Partial<RulesConfig> },
+  params: { displayName: string; rules?: Partial<RulesConfig>; profileId?: string },
 ): Promise<CreateGameResult> {
   const rules = mergeRules(params.rules);
   const gameId = randomBytes(16).toString('hex');
   const playerId = randomBytes(16).toString('hex');
   const playerToken = randomBytes(32).toString('base64url');
   const now = Date.now();
+  const profileId = params.profileId ?? null;
 
   let lastError: unknown = null;
 
@@ -89,9 +120,9 @@ export async function createGame(
             args: [gameId, roomCode, JSON.stringify(rules), ENGINE_VERSION, now, now],
           },
           {
-            sql: `INSERT INTO players (id, game_id, seat, display_name, join_token, created_at)
-                  VALUES (?, ?, 0, ?, ?, ?)`,
-            args: [playerId, gameId, params.displayName, playerToken, now],
+            sql: `INSERT INTO players (id, game_id, seat, display_name, join_token, created_at, profile_id)
+                  VALUES (?, ?, 0, ?, ?, ?, ?)`,
+            args: [playerId, gameId, params.displayName, playerToken, now, profileId],
           },
         ],
         'write',
@@ -159,11 +190,22 @@ async function resolveInitialGameStart(db: Client, gameId: string): Promise<void
  * (a pathological, sustained collision storm — would need 5+ simultaneous
  * joiners repeatedly colliding on one seat) throws rather than silently
  * misreporting the game's state.
+ *
+ * `profileId`, when present, links the new seat to a ranked profile. Unlike
+ * `createGame`, a genuine profile-link collision IS possible here: this
+ * profile may already be linked to a DIFFERENT seat in this same game (e.g.
+ * a stale second tab replaying the same join). That must never fail the
+ * join — the seat join still succeeds, it's just unranked for this seat. On
+ * an INSERT failure, `isProfileLinkConstraintError` disambiguates that case
+ * (violates `idx_players_one_profile_per_game`) from a genuine seat race
+ * (violates `UNIQUE(game_id, seat)`, the pre-existing case handled below): a
+ * profile-link collision retries the SAME seat with `profileId = null`; a
+ * seat collision loops back to a fresh read/re-decide as before.
  */
 export async function joinGame(
   db: Client,
   roomCode: string,
-  params: { displayName: string },
+  params: { displayName: string; profileId?: string },
 ): Promise<JoinGameResult> {
   const gameRow = await db.execute({
     sql: 'SELECT id, rules_config FROM games WHERE room_code = ?',
@@ -174,7 +216,7 @@ export async function joinGame(
   }
 
   const gameId = String(gameRow.rows[0].id);
-  const rules = JSON.parse(String(gameRow.rows[0].rules_config)) as RulesConfig;
+  const rules = normalizeRules(JSON.parse(String(gameRow.rows[0].rules_config)) as Partial<RulesConfig>);
 
   const playerId = randomBytes(16).toString('hex');
   const playerToken = randomBytes(32).toString('base64url');
@@ -219,21 +261,43 @@ export async function joinGame(
     }
 
     const now = Date.now();
+    const profileId = params.profileId ?? null;
 
     try {
       await db.execute({
-        sql: `INSERT INTO players (id, game_id, seat, display_name, join_token, created_at)
-              VALUES (?, ?, ?, ?, ?, ?)`,
-        args: [playerId, gameId, seat, params.displayName, playerToken, now],
+        sql: `INSERT INTO players (id, game_id, seat, display_name, join_token, created_at, profile_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [playerId, gameId, seat, params.displayName, playerToken, now, profileId],
       });
     } catch (err) {
-      if (isUniqueConstraintError(err)) {
+      if (isProfileLinkConstraintError(err)) {
+        // This profile is already linked to a different seat in this same
+        // game — never let this fail the join. Retry the exact same seat,
+        // unlinked (profileId = null): the seat join still succeeds, just
+        // unranked.
+        try {
+          await db.execute({
+            sql: `INSERT INTO players (id, game_id, seat, display_name, join_token, created_at, profile_id)
+                  VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+            args: [playerId, gameId, seat, params.displayName, playerToken, now],
+          });
+        } catch (err2) {
+          if (isUniqueConstraintError(err2)) {
+            // The seat itself got taken concurrently in the tiny gap between
+            // our first and second insert attempts — loop back to a fresh
+            // read/re-decide, same as the seat-collision case below.
+            continue;
+          }
+          throw err2;
+        }
+      } else if (isUniqueConstraintError(err)) {
         // The seat we picked was taken concurrently between our SELECT and
         // our INSERT. This does NOT mean the game is full — loop back to a
         // fresh read and re-decide, rather than reporting 'game-full'.
         continue;
+      } else {
+        throw err;
       }
-      throw err;
     }
 
     const fillsFourthSeat = occupiedSeats.size + 1 === 4;
@@ -270,7 +334,7 @@ export async function getGameByRoomCode(
   return {
     gameId: String(row.id),
     status: String(row.status),
-    rules: JSON.parse(String(row.rules_config)) as RulesConfig,
+    rules: normalizeRules(JSON.parse(String(row.rules_config)) as Partial<RulesConfig>),
     roomCode,
   };
 }
@@ -290,16 +354,24 @@ export async function resolvePlayerToken(
   return { gameId: String(row.game_id), seat: Number(row.seat) as Seat };
 }
 
+/**
+ * `profileId` is additive (null for an unlinked/legacy seat) — existing
+ * callers that only destructure `{ seat, displayName }` are unaffected by
+ * this wider shape. Used both for display purposes and, by
+ * `src/server/ranked.ts`, to resolve which seats are linked to a ranked
+ * profile for settlement/eligibility checks.
+ */
 export async function listPlayers(
   db: Client,
   gameId: string,
-): Promise<Array<{ seat: Seat; displayName: string }>> {
+): Promise<Array<{ seat: Seat; displayName: string; profileId: string | null }>> {
   const result = await db.execute({
-    sql: 'SELECT seat, display_name FROM players WHERE game_id = ? ORDER BY seat ASC',
+    sql: 'SELECT seat, display_name, profile_id FROM players WHERE game_id = ? ORDER BY seat ASC',
     args: [gameId],
   });
   return result.rows.map((row) => ({
     seat: Number(row.seat) as Seat,
     displayName: String(row.display_name),
+    profileId: row.profile_id === null ? null : String(row.profile_id),
   }));
 }

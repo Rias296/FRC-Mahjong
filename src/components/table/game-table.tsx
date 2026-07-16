@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 import { DiscardPool } from './discard-pool';
 import { HandOverPanel } from './hand-over-panel';
+import { MatchStandings } from './match-standings';
 import { OpponentPanel } from './opponent-panel';
 import { PlayerRack, type RackSelectionMode } from './player-rack';
 import { StatusStrip } from './status-strip';
@@ -69,6 +70,14 @@ export function GameTable({ view, connected, code, playerToken, onViewUpdate, on
     setLastWindowSignature(windowSignature);
     setSelectionMode('none');
     setSelectedTileIds([]);
+  }
+
+  // Once the match is over, MatchStandings fully replaces the table (and any
+  // hand-over panel) — this is the only place that check is made; see
+  // hand-over-panel.tsx's doc comment on why it no longer has its own
+  // match-complete branch.
+  if (view.status === 'finished') {
+    return <MatchStandings players={view.players} ranked={view.ranked} />;
   }
 
   const viewerPlayer = view.players.find((p) => p.isViewer) ?? null;
@@ -351,7 +360,6 @@ export function GameTable({ view, connected, code, playerToken, onViewUpdate, on
           players={view.players}
           onNextHand={interactions.handOver === 'next-hand' ? handleNextHand : undefined}
           pending={nextHandPending}
-          isMatchComplete={interactions.handOver === 'match-complete'}
         />
       )}
     </div>

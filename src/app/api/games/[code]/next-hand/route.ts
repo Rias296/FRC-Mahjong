@@ -8,7 +8,9 @@
 import { getDb } from '@/server/db';
 import { getGameByRoomCode, listPlayers, resolvePlayerToken } from '@/server/games';
 import { advanceToNextHand, getMatchSnapshot, type AdvanceToNextHandResult } from '@/server/replay';
+import { getRankedResultForGame, settleRankedMatch } from '@/server/ranked';
 import { toClientView } from '@/server/views';
+import type { ClientRankedResultView } from '@/lib/protocol';
 
 /** Duplicated per-route-file convention (see src/engine/*.test.ts). */
 function extractBearerToken(request: Request): string | null {
@@ -58,6 +60,31 @@ export async function POST(
     );
   }
   if ('error' in result) {
+    // The 'game-finished' branch is this route's own hook for the same
+    // "settle/resolve the ranked result the instant the match ends" pattern
+    // used by POST /actions — a caller landing here (having tried to advance
+    // past an already-over match) should see the ranked result in this same
+    // response rather than needing a follow-up /state poll. No ClientGameView
+    // is built on this branch (there's no next hand to describe), so `ranked`
+    // rides along on the existing error-shaped response as an additive field.
+    if (result.error === 'game-finished') {
+      // Same defensive wrapping as GET /state and POST /actions (see those
+      // routes' comments): settleRankedMatch can throw by design (per-seat
+      // error isolation), and that must never crash this route's own
+      // otherwise-normal 409 response.
+      let ranked: ClientRankedResultView | undefined;
+      try {
+        ranked = await settleRankedMatch(db, game.gameId);
+      } catch (err) {
+        console.error(`[ranked] settleRankedMatch failed for game ${game.gameId}:`, err);
+        try {
+          ranked = await getRankedResultForGame(db, game.gameId);
+        } catch (fallbackErr) {
+          console.error(`[ranked] getRankedResultForGame fallback also failed for game ${game.gameId}:`, fallbackErr);
+        }
+      }
+      return Response.json({ error: result.error, ranked }, { status: 409 });
+    }
     return Response.json({ error: result.error }, { status: 409 });
   }
 

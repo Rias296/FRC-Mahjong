@@ -1,9 +1,10 @@
-import Link from 'next/link';
 import { TileFace } from './tile-face';
+import { AnimatedNumber } from './animated-number';
 import { Button } from '@/components/ui/button';
-import { formatTai, statusLabel } from '@/lib/theme/frc';
+import { formatMatchPoints, formatTai } from '@/lib/theme/frc';
 import { TABLE_STRINGS, paymentLegNarration } from '@/lib/i18n/table';
 import { cn } from '@/lib/utils';
+import { sumPaymentLegs } from '@/engine/scoring';
 import type { ClientPlayerView } from '@/lib/protocol';
 import type { HandResult } from '@/engine/game-state';
 import type { WinType } from '@/engine/scoring';
@@ -11,10 +12,15 @@ import type { WinType } from '@/engine/scoring';
 export interface HandOverPanelProps {
   readonly result: HandResult;
   readonly players: readonly ClientPlayerView[];
-  /** Present only when a next-hand action should be offered (not match-complete). */
+  /**
+   * Present only when a next-hand action should be offered (e.g. absent for
+   * spectators). This component now only ever renders the "this hand just
+   * ended" view — match-complete is handled entirely by MatchStandings,
+   * which game-table.tsx renders instead of the table (and this panel) once
+   * `view.status === 'finished'`.
+   */
   readonly onNextHand?: () => void;
   readonly pending: boolean;
-  readonly isMatchComplete: boolean;
 }
 
 const WIN_TYPE_LABELS: Readonly<Record<WinType, string>> = {
@@ -27,32 +33,20 @@ function nameFor(players: readonly ClientPlayerView[], seat: number): string {
   return players.find((p) => p.seat === seat)?.displayName ?? `Seat ${seat}`;
 }
 
-export function HandOverPanel({
-  result,
-  players,
-  onNextHand,
-  pending,
-  isMatchComplete,
-}: HandOverPanelProps): React.JSX.Element {
+export function HandOverPanel({ result, players, onNextHand, pending }: HandOverPanelProps): React.JSX.Element {
+  const deltas = result.kind === 'win' ? sumPaymentLegs(result.legs) : null;
+
   return (
     <div
       className={cn(
         'fixed inset-0 z-50 flex items-center justify-center bg-background/85 p-4',
-        !isMatchComplete && result.kind === 'win' && 'animate-buzzer-edge-flash',
+        result.kind === 'win' && 'animate-buzzer-edge-flash',
       )}
     >
       <div className="panel border-accent! flex w-full max-w-md flex-col items-center gap-4 rounded-xl p-6 text-center">
-        {isMatchComplete && (
-          <h2 className="font-display text-2xl text-accent">{statusLabel('finished')}</h2>
-        )}
-
         {result.kind === 'win' ? (
           <>
-            {!isMatchComplete && (
-              <h2 className={cn('font-display text-4xl text-accent', 'animate-buzzer-pulse')}>
-                {TABLE_STRINGS.huHeading}
-              </h2>
-            )}
+            <h2 className={cn('font-display text-4xl text-accent', 'animate-buzzer-pulse')}>{TABLE_STRINGS.huHeading}</h2>
 
             <div className="flex w-full flex-col gap-3">
               {result.winners.map((winner) => (
@@ -74,38 +68,52 @@ export function HandOverPanel({
                   {paymentLegNarration(
                     nameFor(players, leg.payerSeat),
                     nameFor(players, leg.payeeSeat),
-                    formatTai(leg.amount),
+                    `${formatMatchPoints(leg.amount)} ${TABLE_STRINGS.pointsUnitLabel}`,
                   )}
                 </span>
               ))}
             </div>
 
-            {!isMatchComplete && (
-              <span className="text-sm text-foreground">
-                {TABLE_STRINGS.nextDealerLabel}: {nameFor(players, result.nextDealerSeat)}
-                {result.nextRepeatCount > 0 ? ` (${TABLE_STRINGS.repeatLabel} ${result.nextRepeatCount})` : ''}
-              </span>
+            {deltas !== null && (
+              <div className="flex w-full flex-col gap-1.5 border-t border-border pt-3">
+                <span className="font-display text-sm text-foreground">{TABLE_STRINGS.settlementHeading}</span>
+                {players
+                  .filter((player) => deltas[player.seat] !== 0)
+                  .map((player) => {
+                    const delta = deltas[player.seat];
+                    return (
+                      <div key={player.seat} className="flex items-center justify-between gap-3 text-sm">
+                        <span className="text-foreground">{player.displayName}</span>
+                        <div className="flex items-center gap-2">
+                          <span className={cn('font-hud', delta > 0 ? 'text-accent' : 'text-destructive')}>
+                            {delta > 0 ? '+' : ''}
+                            {formatMatchPoints(delta)}
+                          </span>
+                          <AnimatedNumber value={player.matchPoints} delta={delta} className="animate-points-pop text-foreground" />
+                          <span className="text-xs text-muted-foreground">{TABLE_STRINGS.pointsUnitLabel}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
             )}
+
+            <span className="text-sm text-foreground">
+              {TABLE_STRINGS.nextDealerLabel}: {nameFor(players, result.nextDealerSeat)}
+              {result.nextRepeatCount > 0 ? ` (${TABLE_STRINGS.repeatLabel} ${result.nextRepeatCount})` : ''}
+            </span>
           </>
         ) : (
           <>
-            {!isMatchComplete && <h2 className="font-display text-2xl text-foreground">{TABLE_STRINGS.handEndsInDraw}</h2>}
-            {!isMatchComplete && (
-              <span className="text-sm text-foreground">
-                {TABLE_STRINGS.nextDealerLabel}: {nameFor(players, result.nextDealerSeat)}
-                {result.nextRepeatCount > 0 ? ` (${TABLE_STRINGS.repeatLabel} ${result.nextRepeatCount})` : ''}
-              </span>
-            )}
+            <h2 className="font-display text-2xl text-foreground">{TABLE_STRINGS.handEndsInDraw}</h2>
+            <span className="text-sm text-foreground">
+              {TABLE_STRINGS.nextDealerLabel}: {nameFor(players, result.nextDealerSeat)}
+              {result.nextRepeatCount > 0 ? ` (${TABLE_STRINGS.repeatLabel} ${result.nextRepeatCount})` : ''}
+            </span>
           </>
         )}
 
-        {isMatchComplete && (
-          <Button render={<Link href="/" />} variant="secondary">
-            {TABLE_STRINGS.backToHomeButton}
-          </Button>
-        )}
-
-        {!isMatchComplete && onNextHand !== undefined && (
+        {onNextHand !== undefined && (
           <Button onClick={onNextHand} disabled={pending}>
             {TABLE_STRINGS.nextHandButton}
           </Button>

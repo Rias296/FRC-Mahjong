@@ -5,10 +5,22 @@ export interface RulesConfig {
   /** Minimum handTai required to declare hu. §11 */
   minTaiToWin: number;                        // default 0
 
-  /** 底 — base points per payment leg. §11 */
+  /**
+   * 底 — base points per payment leg. §11
+   * @deprecated Retained for stored-config/wire compatibility only — the
+   * engine reads `points.basePoints`/`points.perTai` instead. Do not remove
+   * or rename; existing persisted `rules_config` rows and
+   * `isValidRulesOverride` still accept these flat keys.
+   */
   basePoints: number;                         // default 3
 
-  /** 台 — points per tai. §11 */
+  /**
+   * 台 — points per tai. §11
+   * @deprecated Retained for stored-config/wire compatibility only — the
+   * engine reads `points.basePoints`/`points.perTai` instead. Do not remove
+   * or rename; existing persisted `rules_config` rows and
+   * `isValidRulesOverride` still accept these flat keys.
+   */
   pointsPerTai: number;                       // default 1
 
   /** 自摸 tai added on self-drawn wins. §11 */
@@ -40,6 +52,23 @@ export interface RulesConfig {
 
   /** 連N拉N — extra tai per consecutive dealer repeat. §9 */
   dealerRepeatBonusTaiPerRepeat: number;      // default 2
+
+  /**
+   * Pool-scale match-points model, Mahjong-Soul-style. §11, §13. The engine
+   * reads these fields for payment-leg amounts; the flat `basePoints` /
+   * `pointsPerTai` fields above are vestigial (wire/stored-config
+   * compatibility only).
+   */
+  points: {
+    /** Starting points pool per seat. §13 */
+    startingPoints: number;                   // default 100000
+
+    /** 底 — pool-scale base points per payment leg. §11 */
+    basePoints: number;                       // default 3000
+
+    /** 台 — pool-scale points per tai. §11 */
+    perTai: number;                           // default 1000
+  };
 }
 
 export const DEFAULT_RULES: RulesConfig = Object.freeze({
@@ -55,4 +84,24 @@ export const DEFAULT_RULES: RulesConfig = Object.freeze({
   dealerRepeatsOnDraw: true,
   dealerBaseTai: 1,
   dealerRepeatBonusTaiPerRepeat: 2,
+  points: Object.freeze({ startingPoints: 100000, basePoints: 3000, perTai: 1000 }),
 });
+
+/**
+ * Deep-merges a partial/stored `RulesConfig` with `DEFAULT_RULES`, filling in
+ * any missing top-level field and any missing nested field within
+ * `robKong`/`sacredDiscard`/`points` from the corresponding default. Mirrors
+ * `src/server/games.ts`'s `mergeRules` nesting-merge pattern so a stored
+ * config missing `points` entirely (pre-existing persisted rows) or carrying
+ * only a partial `points` override both normalize to a fully-populated
+ * `RulesConfig`.
+ */
+export function normalizeRules(stored: Partial<RulesConfig>): RulesConfig {
+  return {
+    ...DEFAULT_RULES,
+    ...stored,
+    robKong: { ...DEFAULT_RULES.robKong, ...stored.robKong },
+    sacredDiscard: { ...DEFAULT_RULES.sacredDiscard, ...stored.sacredDiscard },
+    points: { ...DEFAULT_RULES.points, ...stored.points },
+  };
+}

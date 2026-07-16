@@ -3,6 +3,7 @@ import type { Client } from '@libsql/client';
 import { getDb } from '@/server/db';
 import { runMigrations } from '@/server/migrations';
 import { createGame } from '@/server/games';
+import { createProfile } from '@/server/ranked';
 import type { JoinGameResponse } from '@/lib/protocol';
 import { POST } from './route';
 
@@ -79,5 +80,35 @@ describe('POST /api/games/[code]/join', () => {
     });
     const response = await POST(request, { params: Promise.resolve({ code: created.roomCode }) });
     expect(response.status).toBe(400);
+  });
+
+  describe('profileToken (ranked linking)', () => {
+    it('links the joining seat to a profile when a valid profileToken is given', async () => {
+      const created = await createGame(db, { displayName: 'Alice' });
+      const profile = await createProfile(db, 'Bob');
+
+      const response = await callJoin(created.roomCode, { displayName: 'Bob', profileToken: profile.secretToken });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as JoinGameResponse;
+      expect(body.seat).toBe(1);
+
+      const playerRow = await db.execute({
+        sql: 'SELECT profile_id FROM players WHERE game_id = ? AND seat = 1',
+        args: [created.gameId],
+      });
+      expect(String(playerRow.rows[0].profile_id)).toBe(profile.profileId);
+    });
+
+    it('returns 401 (never silently unranked) when an explicit profileToken does not resolve', async () => {
+      const created = await createGame(db, { displayName: 'Alice' });
+      const response = await callJoin(created.roomCode, { displayName: 'Bob', profileToken: 'not-a-real-token' });
+      expect(response.status).toBe(401);
+    });
+
+    it('rejects an empty-string profileToken with a clean 400', async () => {
+      const created = await createGame(db, { displayName: 'Alice' });
+      const response = await callJoin(created.roomCode, { displayName: 'Bob', profileToken: '' });
+      expect(response.status).toBe(400);
+    });
   });
 });

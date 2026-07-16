@@ -7,10 +7,20 @@ describe('runMigrations', () => {
     const db = createClient({ url: ':memory:' });
 
     const applied = await runMigrations(db);
-    expect(applied.map((m) => m.filename)).toEqual(['0001_init.sql', '0002_start_hand_unique.sql']);
+    expect(applied.map((m) => m.filename)).toEqual([
+      '0001_init.sql',
+      '0002_start_hand_unique.sql',
+      '0003_ranked.sql',
+      '0004_rank_settlement_resilience.sql',
+    ]);
 
     const rows = await db.execute('SELECT filename FROM _migrations ORDER BY filename ASC');
-    expect(rows.rows.map((r) => String(r.filename))).toEqual(['0001_init.sql', '0002_start_hand_unique.sql']);
+    expect(rows.rows.map((r) => String(r.filename))).toEqual([
+      '0001_init.sql',
+      '0002_start_hand_unique.sql',
+      '0003_ranked.sql',
+      '0004_rank_settlement_resilience.sql',
+    ]);
   });
 
   it('creates usable tables from the migration', async () => {
@@ -50,7 +60,7 @@ describe('runMigrations', () => {
     expect(secondRun).toEqual([]);
 
     const rows = await db.execute('SELECT filename FROM _migrations');
-    expect(rows.rows.length).toBe(2);
+    expect(rows.rows.length).toBe(4);
   });
 
   it('resolves the migrations directory correctly under the vitest execution context', async () => {

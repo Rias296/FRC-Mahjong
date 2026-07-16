@@ -312,4 +312,86 @@ describe('isValidRulesOverride', () => {
   it('rejects an unknown key nested inside sacredDiscard', () => {
     expect(isValidRulesOverride({ sacredDiscard: { bogus: true } })).toBe(false);
   });
+
+  it('accepts a full points sub-object', () => {
+    expect(
+      isValidRulesOverride({ points: { startingPoints: 100000, basePoints: 3000, perTai: 1000 } }),
+    ).toBe(true);
+  });
+
+  it('accepts a partial points sub-object', () => {
+    expect(isValidRulesOverride({ points: { startingPoints: 50000 } })).toBe(true);
+    expect(isValidRulesOverride({ points: {} })).toBe(true);
+  });
+
+  it('rejects an unknown key nested inside points', () => {
+    expect(isValidRulesOverride({ points: { bogus: true } })).toBe(false);
+  });
+
+  it('rejects non-finite/non-numeric points values', () => {
+    expect(isValidRulesOverride({ points: { startingPoints: 'banana' } })).toBe(false);
+    expect(isValidRulesOverride({ points: { basePoints: Number.NaN } })).toBe(false);
+    expect(isValidRulesOverride({ points: { perTai: Number.POSITIVE_INFINITY } })).toBe(false);
+  });
+
+  it('rejects an array as points', () => {
+    expect(isValidRulesOverride({ points: [] })).toBe(false);
+  });
+
+  it('rejects points as a non-object', () => {
+    expect(isValidRulesOverride({ points: 'yes' })).toBe(false);
+    expect(isValidRulesOverride({ points: null })).toBe(false);
+  });
+
+  it('still accepts legacy flat basePoints/pointsPerTai keys', () => {
+    expect(isValidRulesOverride({ basePoints: 3, pointsPerTai: 1 })).toBe(true);
+  });
+
+  it('accepts a points override combined with legacy flat basePoints/pointsPerTai keys in the same request', () => {
+    // The plan says both forms may coexist on the wire; the validator must
+    // not reject the combination just because both the legacy flat fields
+    // and the new nested `points` sub-object are present simultaneously.
+    expect(
+      isValidRulesOverride({
+        basePoints: 3,
+        pointsPerTai: 1,
+        points: { startingPoints: 50000, basePoints: 500, perTai: 200 },
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects a nested array as a points numeric field value', () => {
+    expect(isValidRulesOverride({ points: { startingPoints: [1, 2, 3] } })).toBe(false);
+    expect(isValidRulesOverride({ points: { basePoints: [] } })).toBe(false);
+  });
+
+  it('rejects null as a points numeric field value', () => {
+    expect(isValidRulesOverride({ points: { startingPoints: null } })).toBe(false);
+    expect(isValidRulesOverride({ points: { perTai: null } })).toBe(false);
+  });
+
+  it('rejects a points object with an unknown key mixed in alongside otherwise-valid keys', () => {
+    expect(
+      isValidRulesOverride({ points: { startingPoints: 50000, bogus: 'x' } }),
+    ).toBe(false);
+  });
+
+  it('rejects NaN and -Infinity for every points numeric field individually', () => {
+    for (const key of ['startingPoints', 'basePoints', 'perTai'] as const) {
+      expect(isValidRulesOverride({ points: { [key]: Number.NaN } })).toBe(false);
+      expect(isValidRulesOverride({ points: { [key]: Number.NEGATIVE_INFINITY } })).toBe(false);
+      expect(isValidRulesOverride({ points: { [key]: Number.POSITIVE_INFINITY } })).toBe(false);
+    }
+  });
+
+  it('accepts negative and zero finite numbers for points fields (range is not validated here — only finiteness/type)', () => {
+    // Documents current guard behavior: isValidRulesOverride is a structural/
+    // finiteness check only, not a business-rule (>0) check.
+    expect(isValidRulesOverride({ points: { startingPoints: 0 } })).toBe(true);
+    expect(isValidRulesOverride({ points: { basePoints: -100 } })).toBe(true);
+  });
+
+  it('rejects a points override containing a nested object where a number is expected', () => {
+    expect(isValidRulesOverride({ points: { startingPoints: { nested: true } } })).toBe(false);
+  });
 });
