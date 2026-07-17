@@ -162,6 +162,47 @@ describe('getCurrentHandState', () => {
     await seedGameRow(db, 'gEmpty');
     expect(await getCurrentHandState(db, 'gEmpty')).toBeNull();
   });
+
+  it('returns windowOpenedAt/lastActionAt/rules from the same read', async () => {
+    const db = await freshDb();
+    await seedGameRow(db, 'gWin');
+    await appendStartHand(db, 'gWin', { handNumber: 1, dealerSeat: 0, seed: 42, repeatCount: 0, prevailingWind: 'east' });
+
+    const afterStart = await getCurrentHandState(db, 'gWin');
+    if (afterStart === null) throw new Error('expected an active hand');
+    // Right after start-hand, the opening window (the dealer's
+    // awaiting-discard) opened exactly at the start-hand row's own
+    // createdAt, which — with only one row so far — is also lastActionAt.
+    expect(afterStart.windowOpenedAt).toBe(afterStart.lastActionAt);
+    expect(afterStart.rules).toEqual(DEFAULT_RULES);
+    expect(afterStart.state.phase.type).toBe('awaiting-discard');
+
+    if (afterStart.state.phase.type !== 'awaiting-discard' || afterStart.state.phase.drawnTile === null) {
+      throw new Error('test fixture assumption broken: expected awaiting-discard with a drawn tile');
+    }
+    const discard = await submitAction(db, 'gWin', {
+      type: 'discard',
+      seat: 0,
+      tileId: afterStart.state.phase.drawnTile.id,
+    });
+    if (isSubmitRuleError(discard)) throw new Error(`unexpected rule error: ${discard.message}`);
+
+    const afterDiscard = await getCurrentHandState(db, 'gWin');
+    if (afterDiscard === null) throw new Error('expected an active hand');
+    // The discard changed the window (awaiting-discard -> awaiting-claims,
+    // or straight to the next seat's awaiting-draw if nobody has any legal
+    // claim) — windowOpenedAt must have advanced past (or, at worst, tied)
+    // the start-hand row's createdAt to reflect the NEW window, and can
+    // never be AFTER lastActionAt (the latest row overall): submitAction's
+    // own applyAutoPass may append a further zero-option seat's pass row
+    // moments after the discard — that row doesn't change the window
+    // signature (a mid-window response, per this module's own doc comment),
+    // so it advances lastActionAt without moving windowOpenedAt, which is
+    // exactly the "mid-window responses don't move windowOpenedAt" property
+    // src/server/turn-timer.ts depends on.
+    expect(afterDiscard.windowOpenedAt).toBeGreaterThanOrEqual(afterStart.windowOpenedAt);
+    expect(afterDiscard.windowOpenedAt).toBeLessThanOrEqual(afterDiscard.lastActionAt);
+  });
 });
 
 describe('submitAction', () => {
@@ -598,6 +639,11 @@ describe('getMatchSnapshot', () => {
       expect(snapshot.handNumber).toBe(current.handNumber);
       expect(snapshot.lastSeq).toBe(current.lastSeq);
       expect(snapshot.prevailingWind).toBe('east');
+      // Additive fields: windowOpenedAt/lastActionAt/rules must agree with
+      // getCurrentHandState's own read of the exact same single-hand log.
+      expect(snapshot.windowOpenedAt).toBe(current.windowOpenedAt);
+      expect(snapshot.lastActionAt).toBe(current.lastActionAt);
+      expect(snapshot.rules).toEqual(current.rules);
     },
   );
 

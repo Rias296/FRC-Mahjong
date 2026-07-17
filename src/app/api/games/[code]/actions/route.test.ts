@@ -140,6 +140,20 @@ describe('POST /api/games/[code]/actions', () => {
     expect(response.status).toBe(400);
   });
 
+  it('returns 400 for an otherwise-legal action wire-forging a timedOut tag (server-only audit marker)', async () => {
+    const { roomCode, tokens } = await fullyJoinedGame();
+    // Seat 0 is the dealer and holds the opening draw (awaiting-discard);
+    // this would otherwise be a perfectly legal discard but for the
+    // forged `timedOut` key, which must never be client-acceptable.
+    const response = await callActions(roomCode, tokens[0], {
+      type: 'discard',
+      seat: 0,
+      tileId: 'wan-1-1',
+      timedOut: true,
+    });
+    expect(response.status).toBe(400);
+  });
+
   it('returns 403 when action.seat does not match the authenticated token seat', async () => {
     const { roomCode, tokens } = await fullyJoinedGame();
     // tokens[0] is seat 0's token; submit an action claiming to be seat 1.
@@ -190,6 +204,20 @@ describe('POST /api/games/[code]/actions', () => {
     // still exactly the configured starting pool.
     for (const player of view.players) {
       expect(player.matchPoints).toBe(DEFAULT_RULES.points.startingPoints);
+    }
+
+    // Turn-timer wire fields: present, self-consistent, and reflect the
+    // NEW window this discard just opened (a fresh deadline, not the stale
+    // pre-discard one) — this response is deliberately NOT preceded by an
+    // applyTurnTimeouts call (grace-by-laziness), so turnDeadline here is
+    // simply whatever the post-write snapshot's window computes to.
+    expect(view.turnTimerSeconds).toBe(DEFAULT_RULES.turnTimerSeconds);
+    expect(typeof view.serverNow).toBe('number');
+    if (view.phase?.type === 'hand-over') {
+      expect(view.turnDeadline).toBeNull();
+    } else {
+      expect(typeof view.turnDeadline).toBe('number');
+      expect(view.turnDeadline as number).toBeGreaterThan(Date.now() - 1000);
     }
   });
 

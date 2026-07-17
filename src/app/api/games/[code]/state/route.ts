@@ -9,6 +9,7 @@ import { getDb } from '@/server/db';
 import { getGameByRoomCode, listPlayers, resolvePlayerToken } from '@/server/games';
 import { getMatchSnapshot } from '@/server/replay';
 import { getRankedResultForGame, settleRankedMatch } from '@/server/ranked';
+import { applyTurnTimeouts, computeTurnDeadline } from '@/server/turn-timer';
 import { toClientView } from '@/server/views';
 import type { ClientGameView, ClientPlayerView, ClientRankedResultView } from '@/lib/protocol';
 import type { Seat } from '@/engine/seats';
@@ -28,6 +29,7 @@ function waitingForPlayersView(
   viewerSeat: Seat | null,
   seq: number,
   startingPoints: number,
+  turnTimerSeconds: number,
 ): ClientGameView {
   const nameBySeat = new Map(players.map((p) => [p.seat, p.displayName]));
   const clientPlayers: ClientPlayerView[] = ([0, 1, 2, 3] as const).map((seat) => ({
@@ -61,6 +63,12 @@ function waitingForPlayersView(
     currentTurnSeat: null,
     dealerSeat: null,
     repeatCount: null,
+    // No hand exists yet, so there is no open decision window — turnDeadline
+    // is always null here — but turnTimerSeconds (the configured value) and
+    // serverNow are still meaningfully reportable.
+    turnDeadline: null,
+    serverNow: Date.now(),
+    turnTimerSeconds,
   };
 }
 
@@ -93,6 +101,22 @@ export async function GET(
   const status = game.status as 'waiting-for-players' | 'in-progress' | 'finished';
   const players = await listPlayers(db, game.gameId);
 
+  // Lazy turn-timer enforcement: a GET here (like the ranked-settlement
+  // "observer-healing path" below) is this route's established
+  // precedent for a read that also writes when needed — settleRankedMatch
+  // already does exactly this. applyTurnTimeouts is itself cheap-gated
+  // (a lightweight games-row + latest-action-row read before ever
+  // replaying a hand), and — same defensive wrapping as settleRankedMatch
+  // below — must never crash this route's otherwise-successful response: a
+  // timer-enforcement hiccup is not a reason to fail an ordinary state poll.
+  if (status === 'in-progress') {
+    try {
+      await applyTurnTimeouts(db, game.gameId);
+    } catch (err) {
+      console.error(`[turn-timer] applyTurnTimeouts failed for game ${game.gameId}:`, err);
+    }
+  }
+
   const snapshot = await getMatchSnapshot(db, game.gameId);
   if (snapshot === null) {
     // getMatchSnapshot returning null means this exact read observed zero
@@ -106,7 +130,15 @@ export async function GET(
     // only be stale-low, never falsely-ahead, which is always safe: the
     // client's stream cursor will simply be notified on the next real seq.
     return Response.json(
-      waitingForPlayersView(code, status, players, viewerSeat, 0, game.rules.points.startingPoints),
+      waitingForPlayersView(
+        code,
+        status,
+        players,
+        viewerSeat,
+        0,
+        game.rules.points.startingPoints,
+        game.rules.turnTimerSeconds,
+      ),
       { status: 200 },
     );
   }
@@ -140,9 +172,13 @@ export async function GET(
   }
 
   // Every field below comes from this ONE getMatchSnapshot read (state,
-  // handNumber, lastSeq, prevailingWind, matchPoints all derived from the
-  // same fetched action log) — never assembled from separate queries taken
-  // at different times.
+  // handNumber, lastSeq, prevailingWind, matchPoints, windowOpenedAt, rules
+  // all derived from the same fetched action log) — never assembled from
+  // separate queries taken at different times. This snapshot was taken
+  // AFTER the lazy enforcement above already landed any expired auto-action,
+  // so `turnDeadline` below is computed from the post-enforcement window.
+  const turnDeadline = computeTurnDeadline(snapshot.rules, snapshot.windowOpenedAt, snapshot.state.phase.type, status);
+
   const view = toClientView(
     snapshot.state,
     viewerSeat,
@@ -154,6 +190,7 @@ export async function GET(
     snapshot.lastSeq,
     snapshot.matchPoints,
     ranked,
+    { turnDeadline, serverNow: Date.now(), turnTimerSeconds: snapshot.rules.turnTimerSeconds },
   );
 
   return Response.json(view, { status: 200 });

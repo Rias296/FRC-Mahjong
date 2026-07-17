@@ -112,6 +112,16 @@ export function sortTilesForDisplay(tiles: readonly ClientTile[]): ClientTile[] 
     .map((entry) => entry.tile);
 }
 
+// --- Shared tile sizing ---------------------------------------------------------
+
+/**
+ * Compact tile size shared by melds/flowers in both PlayerRack (the local
+ * viewer) and OpponentPanel, so the viewer's own melds/flowers stay visually
+ * consistent with everyone else's rather than two independently-maintained
+ * literals silently drifting apart.
+ */
+export const COMPACT_TILE_CLASS = 'h-8 w-6 sm:h-9 sm:w-7';
+
 // --- Seat layout --------------------------------------------------------------
 
 export type SeatPosition = 'bottom' | 'right' | 'top' | 'left';

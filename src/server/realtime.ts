@@ -37,9 +37,24 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * actions-table INSERT (via appendActionAtSeq/appendStartHand in
  * actions-log.ts) IS the publish signal — there is no separate fan-out to
  * perform, since every subscriber independently polls the same table.
+ *
+ * `onPoll`, when supplied, is invoked once per poll tick, BEFORE checking
+ * for new rows — this makes each connected client's own SSE poll interval
+ * double as the turn-timer enforcement clock (see
+ * `src/server/turn-timer.ts`'s `applyTurnTimeouts`), matching this
+ * project's existing serverless architecture (no background process/cron —
+ * see docs/DECISIONS.md's "Realtime is DB-polling SSE... Turso/libSQL has no
+ * change-notification primitive and Vercel serverless has no cross-
+ * invocation memory" entry). A hook failure is caught and logged here (never
+ * propagated), so it can never break the notification stream itself, on top
+ * of `applyTurnTimeouts`'s own guarantee that it never throws for an
+ * ordinary rule-validation failure.
  */
 export class DbPollingRealtimeSource implements RealtimeSource {
-  constructor(private readonly db: Client) {}
+  constructor(
+    private readonly db: Client,
+    private readonly onPoll?: (gameId: string) => Promise<void>,
+  ) {}
 
   async publish(gameId: string, event: { seq: number }): Promise<void> {
     // No-op by design; see class doc comment. Referencing the params (as a
@@ -53,6 +68,17 @@ export class DbPollingRealtimeSource implements RealtimeSource {
     let cursor = sinceSeq;
 
     while (!signal.aborted) {
+      if (this.onPoll !== undefined) {
+        try {
+          await this.onPoll(gameId);
+        } catch (err) {
+          console.error(`[realtime] onPoll hook failed for game ${gameId}:`, err);
+        }
+        if (signal.aborted) {
+          return;
+        }
+      }
+
       const latestSeq = await getLatestSeq(this.db, gameId);
       if (signal.aborted) {
         return;

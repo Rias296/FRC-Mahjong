@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeSelectionWindowSignature, deriveInteractions } from './interactions';
+import { computeSelectionWindowSignature, deriveInteractions, isOpponentTimerSeat, pendingClaimSeats } from './interactions';
 import { SEATS, nextSeat, type Seat } from '../../engine/seats';
 import type { ClientGameView, ClientPhaseView, ClientPlayerView } from '../protocol';
 
@@ -493,5 +493,78 @@ describe('computeSelectionWindowSignature', () => {
       computeSelectionWindowSignature(nullPhase),
     ]);
     expect(sigs.size).toBe(3);
+  });
+});
+
+describe('pendingClaimSeats / isOpponentTimerSeat', () => {
+  // Regression coverage for a real bug found in review: game-table.tsx's
+  // turn-timer opponent-ring attribution used to key off currentTurnSeat,
+  // which the engine never reassigns away from the discarder when a claim
+  // window opens — leaving the actual still-pending claimant(s) with no
+  // ring, and misattributing it to the discarder (who has nothing to
+  // decide) for the discarder's own view, already-passed seats, and
+  // spectators.
+
+  function claimsPhase(discarderSeat: Seat, respondedSeats: readonly Seat[]): ClientPhaseView {
+    return {
+      type: 'awaiting-claims',
+      discarderSeat,
+      discardedTile: { id: 'wan-5-copy1', kind: { category: 'suit', suit: 'wan', rank: 5 as const } },
+      respondedSeats,
+    };
+  }
+
+  it('is empty for every non-awaiting-claims phase (including null phase)', () => {
+    const phases: readonly (ClientPhaseView | null)[] = [
+      null,
+      { type: 'awaiting-draw' },
+      { type: 'awaiting-discard', drawnTileForViewer: null },
+      { type: 'awaiting-rob-kong', declarerSeat: 0, kongTileVisible: null, youMayRob: false, stillWaitingCount: 2 },
+      { type: 'hand-over' },
+    ];
+    for (const phase of phases) {
+      const view = makeView({ viewerSeat: 3, currentTurnSeat: 0, phase });
+      expect(pendingClaimSeats(view)).toEqual([]);
+    }
+  });
+
+  it('excludes the discarder and every already-responded seat, includes everyone else', () => {
+    const view = makeView({ viewerSeat: 3, currentTurnSeat: 0, phase: claimsPhase(0, [1]) });
+    expect(pendingClaimSeats(view)).toEqual([2, 3]);
+  });
+
+  it('is empty once every non-discarder seat has responded', () => {
+    const view = makeView({ viewerSeat: 3, currentTurnSeat: 0, phase: claimsPhase(0, [1, 2, 3]) });
+    expect(pendingClaimSeats(view)).toEqual([]);
+  });
+
+  it('includes ALL still-pending seats when more than one claimant has yet to respond (multi-claimant window)', () => {
+    const view = makeView({ viewerSeat: 3, currentTurnSeat: 0, phase: claimsPhase(0, []) });
+    expect(pendingClaimSeats(view)).toEqual([1, 2, 3]);
+  });
+
+  it('isOpponentTimerSeat: during awaiting-claims, true only for pending claimants — never the discarder, ' +
+    'regardless of which seat is asking (discarder, an already-passed seat, or a spectator)', () => {
+    for (const viewerSeat of [0, 1, null] as const) {
+      const view = makeView({ viewerSeat, currentTurnSeat: 0, phase: claimsPhase(0, [1]) });
+      expect(isOpponentTimerSeat(view, 0)).toBe(false); // discarder: nothing to decide
+      expect(isOpponentTimerSeat(view, 1)).toBe(false); // already responded
+      expect(isOpponentTimerSeat(view, 2)).toBe(true); // still pending
+      expect(isOpponentTimerSeat(view, 3)).toBe(true); // still pending
+    }
+  });
+
+  it('isOpponentTimerSeat: falls back to currentTurnSeat for every other phase type (unchanged pre-fix behavior)', () => {
+    const drawView = makeView({ viewerSeat: 3, currentTurnSeat: 1, phase: { type: 'awaiting-draw' } });
+    expect(isOpponentTimerSeat(drawView, 1)).toBe(true);
+    expect(isOpponentTimerSeat(drawView, 0)).toBe(false);
+
+    const robView = makeView({
+      viewerSeat: null,
+      currentTurnSeat: 2,
+      phase: { type: 'awaiting-rob-kong', declarerSeat: 2, kongTileVisible: null, youMayRob: false, stillWaitingCount: 1 },
+    });
+    expect(isOpponentTimerSeat(robView, 2)).toBe(true);
+    expect(isOpponentTimerSeat(robView, 0)).toBe(false);
   });
 });

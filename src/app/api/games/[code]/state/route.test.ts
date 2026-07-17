@@ -356,4 +356,90 @@ describe('GET /api/games/[code]/state', () => {
       expect(Number(historyRows.rows[0].n)).toBe(4);
     },
   );
+
+  describe('turn-timer wire fields and lazy enforcement', () => {
+    it('carries turnDeadline/serverNow/turnTimerSeconds on the in-progress view', async () => {
+      const { roomCode, tokens } = await fullyJoinedGame();
+      const response = await callState(roomCode, tokens[0]);
+      const view = (await response.json()) as ClientGameView;
+
+      expect(view.status).toBe('in-progress');
+      expect(view.turnTimerSeconds).toBe(DEFAULT_RULES.turnTimerSeconds);
+      expect(typeof view.serverNow).toBe('number');
+      expect(typeof view.turnDeadline).toBe('number');
+      expect(view.turnDeadline as number).toBeGreaterThan(Date.now() - 1000);
+    });
+
+    it('carries turnDeadline: null, but a real turnTimerSeconds, on the waiting-for-players view', async () => {
+      const created = await createGame(db, { displayName: 'Alice' });
+      const response = await callState(created.roomCode, created.playerToken);
+      const view = (await response.json()) as ClientGameView;
+
+      expect(view.status).toBe('waiting-for-players');
+      expect(view.turnDeadline).toBeNull();
+      expect(view.turnTimerSeconds).toBe(DEFAULT_RULES.turnTimerSeconds);
+    });
+
+    it('lazily enforces an already-expired opening window on GET, auto-acting before the response is built', async () => {
+      const { gameId, roomCode, tokens } = await fullyJoinedGame();
+
+      // Backdate the hand's start-hand row (the dealer's opening
+      // awaiting-discard window opened at hand start) well past the
+      // default 15s turnTimerSeconds.
+      await db.execute({
+        sql: `UPDATE actions SET created_at = ? WHERE game_id = ? AND action_type = 'start-hand'`,
+        args: [Date.now() - 20000, gameId],
+      });
+
+      const beforeRows = await db.execute({ sql: 'SELECT COUNT(*) AS n FROM actions WHERE game_id = ?', args: [gameId] });
+      expect(Number(beforeRows.rows[0].n)).toBe(1);
+
+      const response = await callState(roomCode, tokens[0]);
+      expect(response.status).toBe(200);
+      const view = (await response.json()) as ClientGameView;
+
+      // The dealer's opening discard should have been auto-timed-out by
+      // this GET's own lazy enforcement, moving the phase on rather than
+      // still sitting in awaiting-discard.
+      expect(view.phase?.type).not.toBe('awaiting-discard');
+
+      // Query for the discard row specifically rather than assuming it's the
+      // very last row: applyTurnTimeouts's own applyAutoPass follow-through
+      // (fixed in review — see turn-timer.ts's doc comment) can append
+      // further zero-option auto-pass rows immediately after an unclaimable
+      // discard, in this SAME enforcement call.
+      const afterRows = await db.execute({
+        sql: "SELECT payload FROM actions WHERE game_id = ? AND action_type = 'discard' ORDER BY seq DESC LIMIT 1",
+        args: [gameId],
+      });
+      expect(afterRows.rows.length).toBe(1);
+      const lastPayload = JSON.parse(String(afterRows.rows[0].payload)) as { timedOut?: boolean };
+      expect(lastPayload.timedOut).toBe(true);
+    });
+
+    it('does not enforce (no-op) when turnTimerSeconds is disabled (<= 0), even for an ancient window', async () => {
+      const created = await createGame(db, { displayName: 'Alice', rules: { turnTimerSeconds: 0 } });
+      const j2 = await joinGame(db, created.roomCode, { displayName: 'Bob' });
+      const j3 = await joinGame(db, created.roomCode, { displayName: 'Carol' });
+      const j4 = await joinGame(db, created.roomCode, { displayName: 'Dave' });
+      if ('error' in j2 || 'error' in j3 || 'error' in j4) {
+        throw new Error('unexpected join error setting up fixture');
+      }
+
+      await db.execute({
+        sql: `UPDATE actions SET created_at = ? WHERE game_id = ? AND action_type = 'start-hand'`,
+        args: [Date.now() - 10 * 24 * 60 * 60 * 1000, created.gameId],
+      });
+
+      const response = await callState(created.roomCode, created.playerToken);
+      const view = (await response.json()) as ClientGameView;
+
+      expect(view.turnTimerSeconds).toBe(0);
+      expect(view.turnDeadline).toBeNull();
+      expect(view.phase?.type).toBe('awaiting-discard');
+
+      const rows = await db.execute({ sql: 'SELECT COUNT(*) AS n FROM actions WHERE game_id = ?', args: [created.gameId] });
+      expect(Number(rows.rows[0].n)).toBe(1);
+    });
+  });
 });

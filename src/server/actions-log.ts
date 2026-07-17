@@ -16,12 +16,26 @@ export interface StartHandPayload {
   readonly prevailingWind: 'east' | 'south' | 'west' | 'north';
 }
 
+/**
+ * A `GameAction` additionally allowed to carry a `timedOut` audit tag — set
+ * exclusively by `src/server/turn-timer.ts`'s `applyTurnTimeouts` when it
+ * auto-acts on a player's behalf after their decision window's server-side
+ * deadline expires (see `RulesConfig.turnTimerSeconds`). The tag is a pure
+ * audit marker: it is never read by the engine (`applyAction` structurally
+ * ignores unknown extra keys on its input, and never does exact-key
+ * validation — see game-state.ts), so a `timedOut`-tagged action replays to
+ * IDENTICAL `GameState` as the same action submitted manually. Client-POSTed
+ * actions must never carry this key — see `isValidGameAction`'s explicit
+ * rejection of it in src/lib/protocol.ts.
+ */
+export type LoggedGameAction = GameAction & { readonly timedOut?: true };
+
 export interface ActionLogRow {
   readonly seq: number;
   readonly handNumber: number;
   readonly actorSeat: Seat | null;
   readonly actionType: 'start-hand' | GameAction['type'];
-  readonly payload: StartHandPayload | GameAction;
+  readonly payload: StartHandPayload | LoggedGameAction;
   readonly createdAt: number;
 }
 
@@ -174,12 +188,19 @@ export type AppendActionAtSeqResult = { readonly seq: number } | 'seq-conflict';
  * semantic legality before trying again — unlike `appendAction` below, whose
  * own retry recomputes `seq` and reinserts the SAME (potentially now-stale/
  * invalid) payload without any re-validation.
+ *
+ * `action`'s type is `LoggedGameAction` (a `GameAction` plus an optional
+ * `timedOut` tag), not bare `GameAction`, so `src/server/turn-timer.ts`'s
+ * `applyTurnTimeouts` can append its server-generated auto-actions through
+ * this exact same primitive/retry-discipline as `submitAction`/
+ * `applyAutoPass` — see `LoggedGameAction`'s doc comment above for why the
+ * extra key is safe to store and replay-inert.
  */
 export async function appendActionAtSeq(
   db: Client,
   gameId: string,
   handNumber: number,
-  action: GameAction,
+  action: LoggedGameAction,
   expectedNextSeq: number,
 ): Promise<AppendActionAtSeqResult> {
   try {
@@ -203,7 +224,7 @@ function rowToActionLogRow(row: Row): ActionLogRow {
     handNumber: Number(row.hand_number),
     actorSeat: row.actor_seat === null ? null : (Number(row.actor_seat) as Seat),
     actionType: String(row.action_type) as ActionLogRow['actionType'],
-    payload: JSON.parse(String(row.payload)) as StartHandPayload | GameAction,
+    payload: JSON.parse(String(row.payload)) as StartHandPayload | LoggedGameAction,
     createdAt: Number(row.created_at),
   };
 }
@@ -239,6 +260,26 @@ export async function getLatestSeq(db: Client, gameId: string): Promise<number> 
     args: [gameId],
   });
   return Number(result.rows[0].latest_seq);
+}
+
+/**
+ * The `created_at` of the single latest (highest-seq) action-log row for a
+ * game, or null if the game has zero action rows yet. This is deliberately
+ * a targeted single-row indexed lookup (`ORDER BY seq DESC LIMIT 1`), NOT a
+ * full `listActionsForHand`/`getCurrentHandState` replay — it exists purely
+ * for `src/server/turn-timer.ts`'s `applyTurnTimeouts` cheap pre-replay gate:
+ * `now < createdAt + turnTimerSeconds*1000` is a cheap, conservative
+ * "definitely not expired yet" check that avoids folding the whole current
+ * hand through the engine on every SSE poll tick when nothing is anywhere
+ * close to timing out.
+ */
+export async function getLatestActionCreatedAt(db: Client, gameId: string): Promise<number | null> {
+  const result = await db.execute({
+    sql: 'SELECT created_at FROM actions WHERE game_id = ? ORDER BY seq DESC LIMIT 1',
+    args: [gameId],
+  });
+  if (result.rows.length === 0) return null;
+  return Number(result.rows[0].created_at);
 }
 
 /**

@@ -14,6 +14,20 @@ export interface RobKongPromptProps {
   readonly pending: boolean;
 }
 
+/**
+ * Below md, the game screen still scrolls (mobile zero-scroll is out of
+ * scope this round), so this stays viewport-`fixed` there. On md+ it must
+ * NOT stay viewport-fixed: the always-visible rack now sits flush against
+ * the true viewport bottom (see game-table.tsx's fixed-viewport grid), so a
+ * `bottom-4`-from-viewport prompt would sit directly on top of the local
+ * rack right when the player needs to see their hand to decide whether to
+ * rob. Anchored above/right of the rack instead, same pattern as
+ * ClaimActionBar — the caller renders this inside that component's
+ * `relative` rack wrapper.
+ */
+const POSITION_CLASS =
+  'fixed right-4 bottom-4 left-4 z-30 sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2 md:absolute md:right-2 md:bottom-full md:left-auto md:mb-2 md:w-auto md:translate-x-0';
+
 const TOUCH_TARGET_CLASS = 'h-11 min-w-11 px-4 text-base';
 
 export function RobKongPrompt({
@@ -27,18 +41,13 @@ export function RobKongPrompt({
   if (state === 'choose') {
     return (
       <div
-        className="panel fixed right-4 bottom-4 left-4 z-30 flex flex-col items-center gap-3 rounded-xl p-4 shadow-lg sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2"
+        className={cn('panel-plaque flex flex-col items-center gap-3 rounded-xl p-4 shadow-lg', POSITION_CLASS)}
         role="group"
         aria-label={TABLE_STRINGS.robKongPromptLabel}
       >
         {kongTileVisible !== null && <TileFace tile={kongTileVisible} className="h-20 w-14 scale-125" />}
         <div className="flex items-center gap-2">
-          <Button
-            variant="default"
-            disabled={pending}
-            onClick={onRob}
-            className={cn(TOUCH_TARGET_CLASS, 'bg-lacquer-red text-foreground hover:bg-lacquer-red/90')}
-          >
+          <Button variant="lacquer" disabled={pending} onClick={onRob} className={TOUCH_TARGET_CLASS}>
             {actionLabel('rob')}
           </Button>
           <Button variant="outline" disabled={pending} onClick={onPass} className={TOUCH_TARGET_CLASS}>
@@ -54,7 +63,7 @@ export function RobKongPrompt({
 
   return (
     <div
-      className="panel fixed right-4 bottom-4 left-4 z-30 flex flex-col items-center gap-2 rounded-xl p-4 shadow-lg sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2"
+      className={cn('panel-plaque flex flex-col items-center gap-2 rounded-xl p-4 shadow-lg', POSITION_CLASS)}
       role="status"
       aria-live="polite"
     >

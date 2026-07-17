@@ -142,3 +142,111 @@ describe('DbPollingRealtimeSource.subscribe', () => {
     await gen.return(undefined);
   }, 10000);
 });
+
+describe('DbPollingRealtimeSource onPoll hook', () => {
+  it('invokes onPoll once per poll tick, BEFORE checking for new rows', async () => {
+    const db = await freshDb();
+    await seedGameRow(db, 'g1');
+    await appendStartHand(db, 'g1', {
+      handNumber: 1,
+      dealerSeat: 0 as Seat,
+      seed: 1,
+      repeatCount: 0,
+      prevailingWind: 'east',
+    });
+
+    const pollCalls: string[] = [];
+    const onPoll = async (gameId: string): Promise<void> => {
+      pollCalls.push(gameId);
+    };
+
+    const source = new DbPollingRealtimeSource(db, onPoll);
+    const controller = new AbortController();
+    const gen = source.subscribe('g1', 0, controller.signal);
+
+    const result = await gen.next();
+    expect(result.done).toBe(false);
+    expect(pollCalls).toEqual(['g1']);
+
+    controller.abort();
+    await gen.return(undefined);
+  });
+
+  it('does not invoke onPoll when none is supplied (default, unchanged behavior)', async () => {
+    const db = await freshDb();
+    await seedGameRow(db, 'g1');
+    await appendStartHand(db, 'g1', {
+      handNumber: 1,
+      dealerSeat: 0 as Seat,
+      seed: 1,
+      repeatCount: 0,
+      prevailingWind: 'east',
+    });
+
+    const source = new DbPollingRealtimeSource(db);
+    const controller = new AbortController();
+    const gen = source.subscribe('g1', 0, controller.signal);
+
+    const result = await gen.next();
+    expect(result.done).toBe(false);
+    expect(result.value).toEqual({ seq: 1 });
+
+    controller.abort();
+    await gen.return(undefined);
+  });
+
+  it('a throwing onPoll hook is caught/logged and never breaks the stream', async () => {
+    const db = await freshDb();
+    await seedGameRow(db, 'g1');
+    await appendStartHand(db, 'g1', {
+      handNumber: 1,
+      dealerSeat: 0 as Seat,
+      seed: 1,
+      repeatCount: 0,
+      prevailingWind: 'east',
+    });
+
+    const onPoll = async (): Promise<void> => {
+      throw new Error('boom');
+    };
+    const source = new DbPollingRealtimeSource(db, onPoll);
+    const controller = new AbortController();
+    const gen = source.subscribe('g1', 0, controller.signal);
+
+    const result = await gen.next();
+    expect(result.done).toBe(false);
+    expect(result.value).toEqual({ seq: 1 });
+
+    controller.abort();
+    await gen.return(undefined);
+  });
+
+  it('invokes onPoll on every poll iteration, not just the first', async () => {
+    const db = await freshDb();
+    await seedGameRow(db, 'g1');
+    await appendStartHand(db, 'g1', {
+      handNumber: 1,
+      dealerSeat: 0 as Seat,
+      seed: 1,
+      repeatCount: 0,
+      prevailingWind: 'east',
+    });
+
+    let count = 0;
+    const onPoll = async (): Promise<void> => {
+      count += 1;
+    };
+    const source = new DbPollingRealtimeSource(db, onPoll);
+    const controller = new AbortController();
+    // sinceSeq === the already-persisted latest seq (1), so subscribe sleeps
+    // between poll ticks rather than yielding immediately.
+    const gen = source.subscribe('g1', 1, controller.signal);
+
+    const pending = gen.next();
+    await sleep(50);
+    controller.abort();
+    await pending;
+
+    expect(count).toBeGreaterThanOrEqual(1);
+  });
+});

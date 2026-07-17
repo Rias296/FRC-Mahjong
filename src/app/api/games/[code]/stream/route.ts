@@ -12,6 +12,7 @@
 import { getDb } from '@/server/db';
 import { getGameByRoomCode, resolvePlayerToken } from '@/server/games';
 import { DbPollingRealtimeSource } from '@/server/realtime';
+import { applyTurnTimeouts } from '@/server/turn-timer';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,7 +51,21 @@ export async function GET(
   }
 
   const sinceSeq = parseSinceSeq(url);
-  const source = new DbPollingRealtimeSource(db);
+
+  // Cheap-gated: only wire the turn-timer enforcement hook (and thus only
+  // pay for it on every poll tick of THIS connection) when it could
+  // possibly matter — using data already loaded above (`game.status`,
+  // `game.rules.turnTimerSeconds`), no extra query. `applyTurnTimeouts`
+  // itself is a no-op in every case this skips too, but skipping the call
+  // entirely avoids re-deriving that from scratch every 1.5s for every
+  // waiting-for-players/finished/timer-disabled game's connected clients.
+  const enforceTimeouts =
+    game.status === 'in-progress' && game.rules.turnTimerSeconds > 0
+      ? async (gid: string) => {
+          await applyTurnTimeouts(db, gid);
+        }
+      : undefined;
+  const source = new DbPollingRealtimeSource(db, enforceTimeouts);
   const encoder = new TextEncoder();
 
   // Shared by both `start` and `cancel` below via closure, so a client

@@ -10,6 +10,7 @@ import { getDb } from '@/server/db';
 import { getGameByRoomCode, listPlayers, resolvePlayerToken } from '@/server/games';
 import { finalizeMatchIfOver, getMatchSnapshot, submitAction } from '@/server/replay';
 import { getRankedResultForGame, settleRankedMatch } from '@/server/ranked';
+import { computeTurnDeadline } from '@/server/turn-timer';
 import type { GameAction, GameState, RuleError } from '@/engine/game-state';
 import { toClientView } from '@/server/views';
 import { isValidGameAction, type ClientRankedResultView, type SubmitActionResponse } from '@/lib/protocol';
@@ -180,6 +181,14 @@ export async function POST(
     }
   }
 
+  // Deliberately NOT preceded by an applyTurnTimeouts call: a response that
+  // arrives just after the deadline but before any enforcement has actually
+  // run should legitimately win (grace-by-laziness), matching the "never
+  // enforce on the write path itself" design in turn-timer.ts's doc comment.
+  // `turnDeadline` here is simply computed from this same post-write
+  // snapshot's window, whatever it happens to be.
+  const turnDeadline = computeTurnDeadline(snapshot.rules, snapshot.windowOpenedAt, snapshot.state.phase.type, status);
+
   const view = toClientView(
     snapshot.state,
     viewerSeat,
@@ -191,6 +200,7 @@ export async function POST(
     snapshot.lastSeq,
     snapshot.matchPoints,
     ranked,
+    { turnDeadline, serverNow: Date.now(), turnTimerSeconds: snapshot.rules.turnTimerSeconds },
   );
 
   const response: SubmitActionResponse = { seq: snapshot.lastSeq, view };

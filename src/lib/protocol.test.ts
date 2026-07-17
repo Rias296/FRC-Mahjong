@@ -88,6 +88,19 @@ describe('isValidGameAction: accepts every legitimate GameAction shape', () => {
   });
 });
 
+describe('isValidGameAction: rejects a wire-forged timedOut tag', () => {
+  it('rejects an otherwise-valid action carrying timedOut: true', () => {
+    expect(isValidGameAction({ type: 'draw', seat: 0, timedOut: true })).toBe(false);
+    expect(isValidGameAction({ type: 'discard', seat: 1, tileId: 'wan-5-1', timedOut: true })).toBe(false);
+    expect(isValidGameAction({ type: 'pass', seat: 3, timedOut: true })).toBe(false);
+  });
+
+  it('rejects timedOut regardless of its value (any presence of the key is forbidden)', () => {
+    expect(isValidGameAction({ type: 'pass', seat: 3, timedOut: false })).toBe(false);
+    expect(isValidGameAction({ type: 'pass', seat: 3, timedOut: 'yes' })).toBe(false);
+  });
+});
+
 describe('isValidGameAction: light fuzz pass — adjacent-malformed shapes are all rejected', () => {
   it('rejects null', () => {
     expect(isValidGameAction(null)).toBe(false);
@@ -263,10 +276,17 @@ describe('isValidRulesOverride', () => {
     'robKongTai',
     'dealerBaseTai',
     'dealerRepeatBonusTaiPerRepeat',
+    'turnTimerSeconds',
   ] as const)('rejects %s as a non-numeric value', (key) => {
     expect(isValidRulesOverride({ [key]: 'banana' })).toBe(false);
     expect(isValidRulesOverride({ [key]: Number.NaN })).toBe(false);
     expect(isValidRulesOverride({ [key]: Number.POSITIVE_INFINITY })).toBe(false);
+  });
+
+  it('accepts a finite turnTimerSeconds override, including a disabling <= 0 value', () => {
+    expect(isValidRulesOverride({ turnTimerSeconds: 30 })).toBe(true);
+    expect(isValidRulesOverride({ turnTimerSeconds: 0 })).toBe(true);
+    expect(isValidRulesOverride({ turnTimerSeconds: -1 })).toBe(true);
   });
 
   it.each(['multipleWinners', 'dealerRepeatsOnDraw'] as const)(

@@ -123,4 +123,92 @@ describe('GET /api/games/[code]/stream', () => {
     },
     10000,
   );
+
+  it(
+    "a poll tick invokes turn-timer enforcement (the route's onPoll hook); the resulting " +
+      'timed-out auto-action append emits a change event just like a real player action would',
+    async () => {
+      const { gameId, roomCode, tokens } = await fullyJoinedGame();
+      const latestBefore = await getLatestSeq(db, gameId);
+
+      // Backdate the dealer's opening awaiting-discard window (default
+      // turnTimerSeconds = 15s) well past its deadline, so the very first
+      // poll tick's lazy enforcement finds it already expired.
+      await db.execute({
+        sql: `UPDATE actions SET created_at = ? WHERE game_id = ? AND action_type = 'start-hand'`,
+        args: [Date.now() - 20000, gameId],
+      });
+
+      const response = await callStream(roomCode, `?token=${tokens[0]}&since=${latestBefore}`);
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+
+      const { value, done } = await reader.read();
+      expect(done).toBe(false);
+
+      const text = new TextDecoder().decode(value);
+      expect(text).toContain('event: change');
+      const match = /data: (\{.*\})\n\n/.exec(text);
+      expect(match).not.toBeNull();
+      const payload = JSON.parse(match![1]) as { seq: number };
+      expect(payload.seq).toBeGreaterThan(latestBefore);
+
+      // Query for the discard row specifically rather than assuming it's the
+      // very last row: applyTurnTimeouts's own applyAutoPass follow-through
+      // (fixed in review — see turn-timer.ts's doc comment) can append
+      // further zero-option auto-pass rows immediately after an unclaimable
+      // discard, in this SAME enforcement call.
+      const rows = await db.execute({
+        sql: "SELECT payload FROM actions WHERE game_id = ? AND action_type = 'discard' ORDER BY seq DESC LIMIT 1",
+        args: [gameId],
+      });
+      expect(rows.rows.length).toBe(1);
+      const lastPayload = JSON.parse(String(rows.rows[0].payload)) as { timedOut?: boolean };
+      expect(lastPayload.timedOut).toBe(true);
+
+      await reader.cancel();
+    },
+    10000,
+  );
+
+  it(
+    'TESTER ROUND: a poll tick never enforces (the onPoll hook is never wired at all, not merely a ' +
+      'no-op) when the game\'s configured turnTimerSeconds is <= 0, even for an ancient expired window',
+    async () => {
+      const created = await createGame(db, { displayName: 'Alice', rules: { turnTimerSeconds: 0 } });
+      const j2 = await joinGame(db, created.roomCode, { displayName: 'Bob' });
+      const j3 = await joinGame(db, created.roomCode, { displayName: 'Carol' });
+      const j4 = await joinGame(db, created.roomCode, { displayName: 'Dave' });
+      if ('error' in j2 || 'error' in j3 || 'error' in j4) {
+        throw new Error('unexpected join error setting up fixture');
+      }
+      const { gameId, roomCode } = created;
+      const token = created.playerToken;
+      const latestBefore = await getLatestSeq(db, gameId);
+
+      await db.execute({
+        sql: `UPDATE actions SET created_at = ? WHERE game_id = ? AND action_type = 'start-hand'`,
+        args: [Date.now() - 10 * 24 * 60 * 60 * 1000, gameId],
+      });
+
+      const response = await callStream(roomCode, `?token=${token}&since=${latestBefore}`);
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+
+      // Give the generator a poll cycle's worth of time to run (well short
+      // of the 1500ms interval, since with the timer disabled it should
+      // never yield a change event at all here).
+      const raceResult = await Promise.race([
+        reader.read().then(() => 'yielded' as const),
+        new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 400)),
+      ]);
+      expect(raceResult).toBe('timed-out');
+
+      const rows = await db.execute({ sql: 'SELECT COUNT(*) AS n FROM actions WHERE game_id = ?', args: [gameId] });
+      expect(Number(rows.rows[0].n)).toBe(1); // only the original start-hand row — nothing enforced/appended
+
+      await reader.cancel();
+    },
+    10000,
+  );
 });

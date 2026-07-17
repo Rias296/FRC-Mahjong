@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { OrnateFrame } from './ornate-frame';
 import { RankBadge } from '@/components/ranked/rank-badge';
 import { computeStandings, type SeatTotals } from '@/engine/scoring';
 import { asTierBand, formatMatchPoints, formatRankPoints, statusLabel } from '@/lib/theme/frc';
@@ -43,7 +44,11 @@ export function MatchStandings({ players, ranked }: MatchStandingsProps): React.
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/85 p-4">
-      <div className="panel border-accent! flex w-full max-w-md flex-col items-center gap-4 rounded-xl p-6 text-center">
+      <OrnateFrame
+        size="md"
+        className="w-full max-w-md"
+        contentClassName="flex flex-col items-center gap-4 rounded-[calc(var(--radius-md)-2px)] p-6 text-center"
+      >
         <h2 className="font-display text-2xl text-accent">{statusLabel('finished')}</h2>
         <h3 className="font-display text-lg text-foreground">{TABLE_STRINGS.standingsHeading}</h3>
 
@@ -54,7 +59,7 @@ export function MatchStandings({ players, ranked }: MatchStandingsProps): React.
               <div
                 key={standing.seat}
                 className={cn(
-                  'flex w-full items-center justify-between gap-3 rounded-lg border border-primary-hover/70 px-3 py-2',
+                  'flex w-full items-center justify-between gap-3 rounded-lg border border-accent/30 px-3 py-2',
                   standing.place === 1 && 'border-accent',
                 )}
               >
@@ -90,7 +95,7 @@ export function MatchStandings({ players, ranked }: MatchStandingsProps): React.
         <Button render={<Link href="/" />} variant="secondary">
           {TABLE_STRINGS.backToHomeButton}
         </Button>
-      </div>
+      </OrnateFrame>
     </div>
   );
 }

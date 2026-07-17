@@ -31,8 +31,13 @@ export function DiscardPool({ view }: DiscardPoolProps): React.JSX.Element {
 
   return (
     <div className="bg-jade/15 flex w-full flex-col items-center justify-center gap-3 rounded-xl p-2">
-      {/* Tablet+: spatial grid quadrants matching each seat's table position. */}
-      <div className="hidden aspect-square w-full max-w-sm grid-cols-3 grid-rows-3 place-items-center md:grid">
+      {/*
+        Tablet+: spatial grid quadrants matching each seat's table position.
+        max-w shrunk from the original max-w-sm (24rem) to max-w-xs (20rem)
+        so CenterScoreboard (rendered alongside this component by
+        game-table.tsx, in the shared center grid cell) has room to coexist.
+      */}
+      <div className="hidden aspect-square w-full max-w-xs grid-cols-3 grid-rows-3 place-items-center md:grid">
         {view.players.map((player) => (
           <div key={player.seat} className={cn(GRID_POSITION_CLASSES[seatPositionFor(player.seat, referenceSeat)])}>
             <SeatDiscardRow player={player} />

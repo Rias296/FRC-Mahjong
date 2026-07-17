@@ -1,5 +1,4 @@
 import { Badge } from '@/components/ui/badge';
-import { prevailingWindLabel, statusLabel } from '@/lib/theme/frc';
 import { TABLE_STRINGS } from '@/lib/i18n/table';
 import { cn } from '@/lib/utils';
 import type { ClientGameView } from '@/lib/protocol';
@@ -9,26 +8,17 @@ export interface StatusStripProps {
   readonly connected: boolean;
 }
 
+/**
+ * Slimmed status strip — connection dot + current-turn player name +
+ * dealer/repeat badge only. Hand number, prevailing wind, and wall count
+ * moved to CenterScoreboard (see center-scoreboard.tsx).
+ */
 export function StatusStrip({ view, connected }: StatusStripProps): React.JSX.Element {
   const currentTurnPlayer = view.players.find((p) => p.seat === view.currentTurnSeat) ?? null;
   const dealerPlayer = view.players.find((p) => p.seat === view.dealerSeat) ?? null;
 
   return (
-    <div className="panel flex w-full flex-wrap items-center justify-center gap-x-4 gap-y-1 rounded-lg px-4 py-2 text-sm">
-      <span className="font-medium text-foreground">
-        {view.handNumber !== null ? `${TABLE_STRINGS.handLabel} ${view.handNumber}` : statusLabel(view.status)}
-      </span>
-
-      {view.prevailingWind !== null && (
-        <span className="text-muted-foreground">{prevailingWindLabel(view.prevailingWind)}</span>
-      )}
-
-      {view.wallRemaining !== null && (
-        <span className="text-muted-foreground">
-          {TABLE_STRINGS.wallLabel}: {view.wallRemaining}
-        </span>
-      )}
-
+    <div className="panel-plaque flex w-full flex-wrap items-center justify-center gap-x-4 gap-y-1 rounded-lg px-4 py-2 text-sm">
       {currentTurnPlayer !== null && (
         <span className="text-muted-foreground">
           {TABLE_STRINGS.currentTurnLabel}: <span className="text-foreground">{currentTurnPlayer.displayName}</span>

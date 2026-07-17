@@ -17,9 +17,14 @@ describe('DEFAULT_RULES', () => {
       dealerBaseTai: 1,
       dealerRepeatBonusTaiPerRepeat: 2,
       points: { startingPoints: 100000, basePoints: 3000, perTai: 1000 },
+      turnTimerSeconds: 15,
     };
 
     expect(DEFAULT_RULES).toEqual(expected);
+  });
+
+  it('turnTimerSeconds defaults to 15', () => {
+    expect(DEFAULT_RULES.turnTimerSeconds).toBe(15);
   });
 
   it('points is the 100000/3000/1000 starting-pool default and is frozen', () => {
@@ -65,6 +70,18 @@ describe('normalizeRules', () => {
 
   it('normalizeRules(DEFAULT_RULES) is deep-equal to DEFAULT_RULES', () => {
     expect(normalizeRules(DEFAULT_RULES)).toEqual(DEFAULT_RULES);
+  });
+
+  it('back-fills turnTimerSeconds on a legacy stored config missing the field entirely', () => {
+    const legacyStored: Partial<RulesConfig> = { deadWallReserve: 20 };
+    const normalized = normalizeRules(legacyStored);
+    expect(normalized.turnTimerSeconds).toBe(DEFAULT_RULES.turnTimerSeconds);
+  });
+
+  it('preserves an explicit turnTimerSeconds override, including a disabling <= 0 value', () => {
+    expect(normalizeRules({ turnTimerSeconds: 30 }).turnTimerSeconds).toBe(30);
+    expect(normalizeRules({ turnTimerSeconds: 0 }).turnTimerSeconds).toBe(0);
+    expect(normalizeRules({ turnTimerSeconds: -1 }).turnTimerSeconds).toBe(-1);
   });
 
   it('treats a stored config with points entirely absent, points: undefined, and points: {} identically', () => {

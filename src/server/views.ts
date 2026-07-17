@@ -167,6 +167,15 @@ function redactPhase(state: GameState, viewerSeat: Seat | null): ClientPhaseView
  * are unaffected. Already fully redacted by the time it reaches here (see
  * `src/server/ranked.ts`'s `RankedResultView` doc comment); this function
  * passes it through verbatim, never reads raw RP off it.
+ *
+ * `timing` is likewise an additive, optional trailing parameter carrying the
+ * turn-timer wire fields (`ClientGameView.turnDeadline`/`serverNow`/
+ * `turnTimerSeconds` — see `src/server/turn-timer.ts`). Passed through
+ * verbatim; this function never computes a deadline or touches the DB/clock
+ * itself (that would break the "pure redaction, no side effects" contract
+ * this whole file's doc comment establishes) — callers (the `/state` and
+ * `/actions` routes) compute `timing` themselves via `computeTurnDeadline`
+ * before calling this.
  */
 export function toClientView(
   state: GameState,
@@ -179,6 +188,7 @@ export function toClientView(
   seq: number,
   matchPoints: SeatTotals,
   ranked?: ClientRankedResultView,
+  timing?: { readonly turnDeadline: number | null; readonly serverNow: number; readonly turnTimerSeconds: number },
 ): ClientGameView {
   const nameBySeat = new Map(players.map((p) => [p.seat, p.displayName]));
 
@@ -200,5 +210,8 @@ export function toClientView(
     dealerSeat: state.dealerSeat,
     repeatCount: state.repeatCount,
     ranked,
+    ...(timing !== undefined
+      ? { turnDeadline: timing.turnDeadline, serverNow: timing.serverNow, turnTimerSeconds: timing.turnTimerSeconds }
+      : {}),
   };
 }

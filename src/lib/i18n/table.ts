@@ -58,8 +58,12 @@ export const TABLE_STRINGS = {
   concealedKongDeclaredNote: 'A concealed kong was declared',
   robKongPromptLabel: 'Rob kong',
 
-  // Claim action bar
+  // Claim action bar / unified floating action cluster
   claimActionsLabel: 'Claim actions',
+  turnActionsLabel: 'Your turn actions',
+
+  // Center scoreboard
+  scoreboardLabel: 'Match scoreboard',
 
   // Toasts
   benignRaceMessage: 'That window already closed',
@@ -111,4 +115,9 @@ const PLACE_LABELS: Readonly<Record<1 | 2 | 3 | 4, string>> = {
 /** Ordinal place label ("1st".."4th") for a standings row (matches SeatStanding.place's 1|2|3|4 shape). */
 export function placeLabel(place: 1 | 2 | 3 | 4): string {
   return PLACE_LABELS[place];
+}
+
+/** "N second(s) remaining" — aria-label for the turn-timer countdown ring (turn-timer-ring.tsx). */
+export function turnTimerAriaLabel(seconds: number): string {
+  return `${seconds} second${seconds === 1 ? '' : 's'} remaining`;
 }

@@ -57,6 +57,9 @@
   --color-success: var(--success);
   --color-tile-face: var(--tile-face);
   --color-tile-face-muted: var(--tile-face-muted);
+  --color-wood: var(--wood);
+  --color-wood-dark: var(--wood-dark);
+  --color-wood-light: var(--wood-light);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -105,6 +108,9 @@
   --success: #2E9E82;
   --tile-face: #F5F1E8;
   --tile-face-muted: #9AA3BF;
+  --wood: #4A3524;
+  --wood-dark: #241A10;
+  --wood-light: #6B4E32;
 }
 
 @utility panel {
@@ -114,6 +120,51 @@
 
 @utility pixelated {
   image-rendering: pixelated;
+}
+
+/*
+ * frame-wood / panel-plaque set their decorative shadow via --tw-shadow and
+ * the same 5-variable composed `box-shadow` formula Tailwind's own ring/shadow
+ * utilities use (see .ring-2's generated CSS), instead of a raw box-shadow
+ * literal. A raw literal here would fully clobber ring-2's box-shadow when
+ * both classes land on the same element (equal specificity, single
+ * box-shadow property, last-declared-wins in the cascade — not a merge) —
+ * exactly the bug that made opponent-panel.tsx's isCurrentTurn ring silently
+ * stop rendering once combined with frame-wood. Composing through the shared
+ * --tw-* variable chain means both utilities write the SAME final box-shadow
+ * formula, so whichever rule's box-shadow declaration wins the cascade is
+ * irrelevant — it reads the same, already-correctly-cascaded custom
+ * properties either way.
+ */
+@utility frame-wood {
+  background:
+    repeating-linear-gradient(88deg,
+      color-mix(in srgb, var(--wood-dark) 55%, transparent) 0 2px,
+      transparent 2px 6px,
+      color-mix(in srgb, var(--wood-light) 18%, transparent) 6px 7px,
+      transparent 7px 13px),
+    linear-gradient(135deg, var(--wood-light) 0%, var(--wood) 22%,
+      var(--wood-dark) 50%, var(--wood) 74%, var(--wood-dark) 100%);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  --tw-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 20%, transparent),
+    inset 0 -1px 0 rgb(0 0 0 / 0.55),
+    0 4px 14px rgb(0 0 0 / 0.5);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+}
+
+@utility panel-plaque {
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--wood-light) 12%, var(--popover)) 0%,
+      var(--popover) 35%,
+      color-mix(in srgb, var(--wood-dark) 35%, var(--popover)) 100%);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  --tw-shadow:
+    inset 0 0 0 1px rgb(0 0 0 / 0.4),
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 15%, transparent),
+    0 4px 12px rgb(0 0 0 / 0.45);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
 }
 
 @keyframes buzzer-pulse {

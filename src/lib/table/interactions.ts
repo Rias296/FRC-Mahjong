@@ -8,7 +8,7 @@
  * and lets the server's RuleError response reject illegal attempts.
  */
 
-import { nextSeat, type Seat } from '../../engine/seats';
+import { nextSeat, SEATS, type Seat } from '../../engine/seats';
 import type { ClientGameView, ClientPhaseView } from '../protocol';
 
 export type ClaimOffer = 'hu' | 'pung' | 'kong' | 'chow' | 'pass';
@@ -73,6 +73,54 @@ function deriveRobPrompt(
 }
 
 /**
+ * Every seat that still has an open, unresolved claim decision on the
+ * current discard — everyone except the discarder and everyone already in
+ * `respondedSeats`, both fully public/unredacted wire fields (see
+ * `views.ts`'s `redactPhase`, unlike `awaiting-rob-kong`'s eligible-robber
+ * identities, which ARE redacted — see `deriveRobPrompt`'s doc territory).
+ * Empty for every phase type other than `awaiting-claims`.
+ *
+ * This exists because the engine (`game-state.ts`'s `handleDiscard`) never
+ * reassigns `currentTurnSeat` away from the discarder when a claim window
+ * opens — it stays pinned to the one seat with nothing left to decide, so
+ * `currentTurnSeat` alone cannot answer "who currently has an open window"
+ * during `awaiting-claims` the way it correctly can for
+ * `awaiting-draw`/`awaiting-discard`. See `isOpponentTimerSeat`'s doc
+ * comment for the consumer this was built for (a real bug found in review:
+ * the discarder's own view of their opponents, and every already-passed
+ * seat's/spectator's view, previously showed the turn-timer countdown ring
+ * on the discarder instead of the actual still-deciding claimant(s), or on
+ * nobody at all).
+ */
+export function pendingClaimSeats(view: ClientGameView): readonly Seat[] {
+  const phase = view.phase;
+  if (phase === null || phase.type !== 'awaiting-claims') return [];
+  const discarderSeat = phase.discarderSeat;
+  const respondedSeats = phase.respondedSeats ?? [];
+  return SEATS.filter((seat) => seat !== discarderSeat && !respondedSeats.includes(seat));
+}
+
+/**
+ * Which seat's OpponentPanel should show the turn-timer countdown ring for
+ * the currently-open decision window (see `turn-timer-ring.tsx`). Phase-aware
+ * so it doesn't fall into the `currentTurnSeat`-misattribution bug
+ * `pendingClaimSeats` exists to fix: `awaiting-claims` uses the real pending
+ * -claimant set (there may be more than one — the ring is a single shared
+ * server-anchored deadline for the whole window, so showing it on every
+ * still-deciding seat is accurate, not a duplicated timer); every other
+ * phase type (including `awaiting-rob-kong`, whose real still-deciding
+ * robbers are intentionally redacted — every real player already sees the
+ * ring in their own rack instead via `InteractionModel`'s own
+ * canDraw/canDiscard/claimBar/robPrompt fields, so this fallback only ever
+ * matters for a spectator) keeps the original `currentTurnSeat` comparison,
+ * which genuinely is correct there.
+ */
+export function isOpponentTimerSeat(view: ClientGameView, seat: Seat): boolean {
+  if (view.phase?.type === 'awaiting-claims') return pendingClaimSeats(view).includes(seat);
+  return view.currentTurnSeat === seat;
+}
+
+/**
  * A stable identity for the decision WINDOW the viewer is currently in —
  * NOT a serialization of the whole phase object. `ClientPhaseView` also
  * carries fields that mutate every time any OTHER player responds within a
@@ -88,6 +136,12 @@ function deriveRobPrompt(
 export function computeSelectionWindowSignature(view: ClientGameView): string {
   const phase = view.phase;
   switch (phase?.type) {
+    case 'awaiting-draw':
+      // Seat-qualified so two consecutive different seats' draw turns (e.g.
+      // an entire idle/disconnected turn timing out between two ~1.5s SSE
+      // polls) are never mistaken for the same window — mirrors the server
+      // twin, computeWindowSignature in src/server/replay.ts.
+      return `draw:${view.currentTurnSeat}`;
     case 'awaiting-discard':
       return `discard:${view.currentTurnSeat}:${phase.drawnTileForViewer?.id ?? 'none'}`;
     case 'awaiting-claims':

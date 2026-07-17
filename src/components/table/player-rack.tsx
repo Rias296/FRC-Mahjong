@@ -1,12 +1,25 @@
 import { Badge } from '@/components/ui/badge';
 import { FaceDownTile, TileFace } from './tile-face';
-import { meldFaceDown, sortTilesForDisplay } from '@/lib/table/tile-display';
-import { formatMatchPoints } from '@/lib/theme/frc';
+import { OrnateFrame } from './ornate-frame';
+import { COMPACT_TILE_CLASS, meldFaceDown, sortTilesForDisplay } from '@/lib/table/tile-display';
 import { TABLE_STRINGS } from '@/lib/i18n/table';
 import { cn } from '@/lib/utils';
 import type { ClientPlayerView, ClientTile } from '@/lib/protocol';
 
 export type RackSelectionMode = 'none' | 'chow-select' | 'added-kong-select' | 'concealed-kong-select';
+
+/**
+ * Local-rack (viewer's own hand) tile size — exact integer multiples of the
+ * source sprite art geometry (44x60 art within a 64px cell; see
+ * src/lib/table/tile-sprites.ts's ART_W/ART_H) at each breakpoint, so tiles
+ * never render with non-integer aspect distortion:
+ *   md-xl:  1x   -> 44x60
+ *   xl:     1.5x -> 66x90 (a deliberate half-step — 2x cannot fit 17 tiles
+ *                   at the 1366px xl breakpoint)
+ *   2xl:    2x   -> 88x120
+ * Below md, the default TileFace size (TILE_SIZE_CLASSES) is kept as-is.
+ */
+const RACK_TILE_CLASS = 'md:h-[60px] md:w-[44px] xl:h-[90px] xl:w-[66px] 2xl:h-[120px] 2xl:w-[88px]';
 
 export interface PlayerRackProps {
   readonly player: ClientPlayerView;
@@ -63,6 +76,7 @@ export function PlayerRack({
       <TileFace
         tile={tile}
         className={cn(
+          RACK_TILE_CLASS,
           extraClassName,
           selected && 'ring-2 ring-accent ring-offset-2 ring-offset-background -translate-y-1',
         )}
@@ -87,11 +101,7 @@ export function PlayerRack({
   }
 
   return (
-    <div className="flex flex-col items-center gap-2 rounded-lg border border-primary-hover/70 p-2">
-      <span className="font-hud text-xs text-accent">
-        {formatMatchPoints(player.matchPoints)} {TABLE_STRINGS.pointsUnitLabel}
-      </span>
-
+    <OrnateFrame size="md" contentClassName="flex flex-col items-center gap-2 p-2">
       {player.barredVisible === true && <Badge variant="destructive">{TABLE_STRINGS.barredBadge}</Badge>}
 
       {player.melds.length > 0 && (
@@ -100,13 +110,13 @@ export function PlayerRack({
             meldFaceDown(meld, true) ? (
               <div key={meldIndex} className="flex gap-0.5">
                 {[0, 1, 2, 3].map((i) => (
-                  <FaceDownTile key={i} />
+                  <FaceDownTile key={i} className={COMPACT_TILE_CLASS} />
                 ))}
               </div>
             ) : (
               <div key={meldIndex} className="flex gap-0.5">
                 {meld.tiles.map((tile) => (
-                  <TileFace key={tile.id} tile={tile} />
+                  <TileFace key={tile.id} tile={tile} className={COMPACT_TILE_CLASS} />
                 ))}
               </div>
             ),
@@ -117,7 +127,7 @@ export function PlayerRack({
       {player.flowers.length > 0 && (
         <div className="flex flex-wrap items-center justify-center gap-1">
           {player.flowers.map((tile) => (
-            <TileFace key={tile.id} tile={tile} className="scale-[0.8]" />
+            <TileFace key={tile.id} tile={tile} className={COMPACT_TILE_CLASS} />
           ))}
         </div>
       )}
@@ -126,6 +136,6 @@ export function PlayerRack({
         {sortedRest.map((tile) => renderTile(tile))}
         {drawnTile != null && renderTile(drawnTile, 'ml-2')}
       </div>
-    </div>
+    </OrnateFrame>
   );
 }

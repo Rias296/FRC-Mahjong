@@ -1,5 +1,6 @@
 import { TileFace } from './tile-face';
 import { AnimatedNumber } from './animated-number';
+import { OrnateFrame } from './ornate-frame';
 import { Button } from '@/components/ui/button';
 import { formatMatchPoints, formatTai } from '@/lib/theme/frc';
 import { TABLE_STRINGS, paymentLegNarration } from '@/lib/i18n/table';
@@ -43,7 +44,11 @@ export function HandOverPanel({ result, players, onNextHand, pending }: HandOver
         result.kind === 'win' && 'animate-buzzer-edge-flash',
       )}
     >
-      <div className="panel border-accent! flex w-full max-w-md flex-col items-center gap-4 rounded-xl p-6 text-center">
+      <OrnateFrame
+        size="md"
+        className="w-full max-w-md"
+        contentClassName="flex flex-col items-center gap-4 rounded-[calc(var(--radius-md)-2px)] p-6 text-center"
+      >
         {result.kind === 'win' ? (
           <>
             <h2 className={cn('font-display text-4xl text-accent', 'animate-buzzer-pulse')}>{TABLE_STRINGS.huHeading}</h2>
@@ -118,7 +123,7 @@ export function HandOverPanel({ result, players, onNextHand, pending }: HandOver
             {TABLE_STRINGS.nextHandButton}
           </Button>
         )}
-      </div>
+      </OrnateFrame>
     </div>
   );
 }

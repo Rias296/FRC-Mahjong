@@ -1,7 +1,8 @@
 import { Badge } from '@/components/ui/badge';
 import { FaceDownTile, TileFace } from './tile-face';
-import { meldFaceDown } from '@/lib/table/tile-display';
-import { formatMatchPoints, seatLabel } from '@/lib/theme/frc';
+import { OrnateFrame } from './ornate-frame';
+import { COMPACT_TILE_CLASS, meldFaceDown } from '@/lib/table/tile-display';
+import { seatLabel } from '@/lib/theme/frc';
 import { TABLE_STRINGS } from '@/lib/i18n/table';
 import { cn } from '@/lib/utils';
 import type { ClientPlayerView } from '@/lib/protocol';
@@ -10,17 +11,31 @@ export interface OpponentPanelProps {
   readonly player: ClientPlayerView;
   readonly isCurrentTurn: boolean;
   readonly isDealer: boolean;
+  /**
+   * Optional turn-timer countdown ring (see turn-timer-ring.tsx), passed in
+   * by game-table.tsx only for the seat whose decision window is currently
+   * open and that the viewer isn't themselves part of (see that file's
+   * `showOpponentTimer` derivation). Rendered in the header row alongside
+   * the seat/name/dealer chrome, never over the tile content, per
+   * docs/THEME.md's "ornament stays on chrome, never on tiles" rule.
+   */
+  readonly timer?: React.ReactNode;
 }
 
-const COMPACT_TILE_CLASS = 'h-8 w-6 sm:h-9 sm:w-7';
+/**
+ * Face-down concealed-hand strip tiles — smaller than COMPACT_TILE_CLASS
+ * (melds/flowers) with a horizontal overlap (negative margin via
+ * -space-x-*) so a full 16-tile opponent hand fits the new height budget
+ * from the md+ fixed-viewport table layout (see game-table.tsx).
+ */
+const CONCEALED_STRIP_TILE_CLASS = 'h-7 w-5 sm:h-8 sm:w-6';
 
-export function OpponentPanel({ player, isCurrentTurn, isDealer }: OpponentPanelProps): React.JSX.Element {
+export function OpponentPanel({ player, isCurrentTurn, isDealer, timer }: OpponentPanelProps): React.JSX.Element {
   return (
-    <div
-      className={cn(
-        'flex flex-col items-center gap-1.5 rounded-lg border border-primary-hover/70 p-2',
-        isCurrentTurn && 'ring-2 ring-frc-blue-text',
-      )}
+    <OrnateFrame
+      size="sm"
+      className={cn(isCurrentTurn && 'ring-2 ring-frc-blue-text')}
+      contentClassName="flex flex-col items-center gap-1.5 p-2"
     >
       <div className="flex items-center gap-1.5">
         <span className="text-xs text-muted-foreground">{seatLabel(player.seat)}</span>
@@ -30,15 +45,12 @@ export function OpponentPanel({ player, isCurrentTurn, isDealer }: OpponentPanel
             {TABLE_STRINGS.dealerBadge}
           </Badge>
         )}
+        {timer}
       </div>
 
-      <span className="font-hud text-xs text-accent">
-        {formatMatchPoints(player.matchPoints)} {TABLE_STRINGS.pointsUnitLabel}
-      </span>
-
-      <div className="flex flex-wrap items-center justify-center gap-0.5">
+      <div className="flex flex-wrap items-center justify-center -space-x-1.5">
         {Array.from({ length: player.concealedCount }, (_, i) => (
-          <FaceDownTile key={i} className={COMPACT_TILE_CLASS} />
+          <FaceDownTile key={i} className={CONCEALED_STRIP_TILE_CLASS} />
         ))}
       </div>
 
@@ -69,6 +81,6 @@ export function OpponentPanel({ player, isCurrentTurn, isDealer }: OpponentPanel
           ))}
         </div>
       )}
-    </div>
+    </OrnateFrame>
   );
 }

@@ -165,6 +165,21 @@ export interface ClientGameView {
   readonly repeatCount: number | null;
   /** Only meaningfully present when `status === 'finished'`. */
   readonly ranked?: ClientRankedResultView;
+  /**
+   * Server-authoritative turn-timer fields (see `src/server/turn-timer.ts`
+   * and `RulesConfig.turnTimerSeconds`). Additive/optional so existing
+   * callers that don't pass a `timing` argument to `toClientView` are
+   * unaffected. `turnDeadline` is the epoch-ms instant the currently-open
+   * decision window expires — null when there is no active window
+   * (hand-over/no-hand), the timer is disabled (`turnTimerSeconds <= 0`), or
+   * the game isn't `in-progress`. `serverNow` is the server's epoch-ms clock
+   * at response time, so a client can compute a skew-corrected countdown
+   * instead of trusting its own clock. `turnTimerSeconds` mirrors the game's
+   * configured value (null only if genuinely unknown, e.g. no hand yet).
+   */
+  readonly turnDeadline?: number | null;
+  readonly serverNow?: number;
+  readonly turnTimerSeconds?: number | null;
 }
 
 export interface CreateGameRequest {
@@ -230,6 +245,14 @@ export interface SubmitActionResponse {
  * in hand) are NOT this guard's job — those correctly surface as a
  * `RuleError` from `applyAction` itself, a distinct failure category from
  * "doesn't even match the wire shape".
+ *
+ * Also rejects any action carrying a `timedOut` key. `timedOut` is a
+ * server-only audit tag (see `src/server/turn-timer.ts`'s
+ * `LoggedGameAction`) applied exclusively by the server's own turn-timer
+ * enforcement when it auto-acts on a player's behalf after their decision
+ * window expires. It must never be forgeable by a client: a POSTed action
+ * carrying `timedOut` is rejected outright here, before it ever reaches
+ * `submitAction`, regardless of the action's `type`.
  */
 const VALID_ACTION_TYPES: readonly GameAction['type'][] = [
   'draw',
@@ -269,6 +292,10 @@ function isValidClaimSpec(value: unknown): boolean {
 
 export function isValidGameAction(value: unknown): value is GameAction {
   if (!isPlainObject(value)) return false;
+  // A wire-forged 'timedOut' tag must never be accepted from a client — see
+  // this function's doc comment. Checked before anything else so it rejects
+  // regardless of `type`/shape.
+  if ('timedOut' in value) return false;
   const { type, seat } = value;
   if (typeof type !== 'string' || !(VALID_ACTION_TYPES as readonly string[]).includes(type)) return false;
   if (!isValidSeat(seat)) return false;
@@ -318,6 +345,7 @@ const NUMERIC_RULES_KEYS = [
   'robKongTai',
   'dealerBaseTai',
   'dealerRepeatBonusTaiPerRepeat',
+  'turnTimerSeconds',
 ] as const;
 
 const BOOLEAN_RULES_KEYS = ['multipleWinners', 'dealerRepeatsOnDraw'] as const;

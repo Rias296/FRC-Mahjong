@@ -9,6 +9,7 @@ import { getDb } from '@/server/db';
 import { getGameByRoomCode, listPlayers, resolvePlayerToken } from '@/server/games';
 import { advanceToNextHand, getMatchSnapshot, type AdvanceToNextHandResult } from '@/server/replay';
 import { getRankedResultForGame, settleRankedMatch } from '@/server/ranked';
+import { computeTurnDeadline } from '@/server/turn-timer';
 import { toClientView } from '@/server/views';
 import type { ClientRankedResultView } from '@/lib/protocol';
 
@@ -117,6 +118,20 @@ export async function POST(
   // only ever occurs while the game is still in-progress: the 'game-finished'
   // outcome above is a distinct error branch, never bundled with a success
   // result, so the status here is always 'in-progress'.
+  //
+  // turnDeadline is computed from this same snapshot's windowOpenedAt/rules
+  // (the brand-new hand's start-hand row), matching GET /state and POST
+  // /actions so every in-progress response — including the one immediately
+  // after a hand transition — carries a turnDeadline. Omitting it here was a
+  // real gap: the response otherwise silently dropped turnDeadline/serverNow
+  // /turnTimerSeconds until the next /state poll or SSE tick.
+  const turnDeadline = computeTurnDeadline(
+    snapshot.rules,
+    snapshot.windowOpenedAt,
+    snapshot.state.phase.type,
+    'in-progress',
+  );
+
   const view = toClientView(
     snapshot.state,
     viewerSeat,
@@ -127,6 +142,8 @@ export async function POST(
     snapshot.prevailingWind,
     snapshot.lastSeq,
     snapshot.matchPoints,
+    undefined,
+    { turnDeadline, serverNow: Date.now(), turnTimerSeconds: snapshot.rules.turnTimerSeconds },
   );
 
   return Response.json(view, { status: 200 });

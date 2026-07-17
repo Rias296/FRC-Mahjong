@@ -51,6 +51,38 @@ const NO_ACTIVE_HAND_ERROR: RuleError = {
   message: 'No active hand exists for this game (it may not have started yet, or has already finished).',
 };
 
+// --- window signature (server-side twin of interactions.ts's
+// computeSelectionWindowSignature) ------------------------------------------
+
+/**
+ * A stable identity for the decision WINDOW the current phase represents —
+ * the server-side twin of `src/lib/table/interactions.ts`'s
+ * `computeSelectionWindowSignature`, operating on the real (unredacted)
+ * `GameState`/`Phase` instead of a per-viewer `ClientGameView`/
+ * `ClientPhaseView`. Used by `foldActionRows` below to detect exactly when
+ * the currently-open window changed (a new draw, a new discard to claim, a
+ * new rob-kong declaration, or hand-over) versus when it merely received
+ * another response from a still-undecided seat within the SAME window (e.g.
+ * one of several claimants passing while others are still deciding) — the
+ * latter must NOT be mistaken for a new window opening. See `RulesConfig
+   .turnTimerSeconds` / `src/server/turn-timer.ts` for the consumer.
+ */
+function computeWindowSignature(state: GameState): string {
+  const phase = state.phase;
+  switch (phase.type) {
+    case 'awaiting-draw':
+      return `awaiting-draw:${state.currentTurnSeat}`;
+    case 'awaiting-discard':
+      return `awaiting-discard:${state.currentTurnSeat}:${phase.drawnTile?.id ?? 'none'}`;
+    case 'awaiting-claims':
+      return `awaiting-claims:${phase.discarderSeat}:${phase.discardedTile.id}`;
+    case 'awaiting-rob-kong':
+      return `awaiting-rob-kong:${phase.declarerSeat}:${phase.kongTile.id}`;
+    case 'hand-over':
+      return 'hand-over';
+  }
+}
+
 // --- replayHand --------------------------------------------------------------
 
 /**
@@ -59,16 +91,29 @@ const NO_ACTIVE_HAND_ERROR: RuleError = {
  * applyAction in seq order for everything after it. Throws a clear internal
  * error (never silently skips) if the log is corrupt: a missing/misplaced
  * start-hand row, or any applyAction call rejected by the engine. Shared,
- * DB-free fold logic used by both `replayHand` (which fetches its own rows)
- * and `getCurrentHandState` (which needs the fetched rows' seqs too, to
- * compute `lastSeq` without a second, potentially-racy round trip).
+ * DB-free fold logic used by `replayHand` (which fetches its own rows),
+ * `getCurrentHandState`, and `getMatchSnapshot` (both of which need the
+ * fetched rows' seqs/createdAt too, to compute `lastSeq`/`lastActionAt`
+ * without a second, potentially-racy round trip).
+ *
+ * Also tracks `windowOpenedAt`: the `createdAt` of the LAST row whose
+ * applied result changed the window signature (`computeWindowSignature`
+ * above), starting from the start-hand row's own `createdAt` (the hand's
+ * very first window — the opening `awaiting-draw` — "opens" the instant the
+ * hand starts). Every row's signature is compared against the running
+ * signature; only a genuine change advances `windowOpenedAt`. A mid-window
+ * response (e.g. a second claimant passing while a third is still deciding,
+ * or a zero-option seat's own auto-pass) leaves the signature — and
+ * therefore `windowOpenedAt` — untouched, which is exactly the property
+ * `src/server/turn-timer.ts` needs to compute a correct, non-resettable
+ * deadline for the window that is actually still open.
  */
 function foldActionRows(
   gameId: string,
   handNumber: number,
   rows: readonly ActionLogRow[],
   rules: RulesConfig,
-): GameState {
+): { state: GameState; windowOpenedAt: number } {
   if (rows.length === 0 || rows[0].actionType !== 'start-hand') {
     throw new Error(
       `replayHand: corrupt log for game ${gameId} hand ${handNumber} — expected the first row to be ` +
@@ -78,6 +123,8 @@ function foldActionRows(
 
   const startPayload = rows[0].payload as StartHandPayload;
   let state = startHand(startPayload.dealerSeat, startPayload.seed, rules, startPayload.repeatCount);
+  let windowOpenedAt = rows[0].createdAt;
+  let signature = computeWindowSignature(state);
 
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
@@ -90,9 +137,14 @@ function foldActionRows(
       );
     }
     state = result;
+    const nextSignature = computeWindowSignature(state);
+    if (nextSignature !== signature) {
+      windowOpenedAt = row.createdAt;
+      signature = nextSignature;
+    }
   }
 
-  return state;
+  return { state, windowOpenedAt };
 }
 
 /**
@@ -107,7 +159,7 @@ export async function replayHand(
   rules: RulesConfig,
 ): Promise<GameState> {
   const rows = await listActionsForHand(db, gameId, handNumber);
-  return foldActionRows(gameId, handNumber, rows, rules);
+  return foldActionRows(gameId, handNumber, rows, rules).state;
 }
 
 // --- getCurrentHandState -------------------------------------------------------
@@ -126,11 +178,32 @@ export async function replayHand(
  * `appendActionAtSeq`, computed from the SAME read as the state it was
  * validated against (no separate, later `getLatestSeq` query that could
  * reintroduce a gap for a concurrent write to land in).
+ *
+ * Also additionally returns, from that SAME read/fold:
+ * - `windowOpenedAt` — see `foldActionRows`'s doc comment; the instant the
+ *   currently-open decision window opened, for `src/server/turn-timer.ts`'s
+ *   deadline computation.
+ * - `lastActionAt` — the `createdAt` of the very last (highest-seq) row
+ *   folded into `state`.
+ * - `rules` — already parsed/normalized here to fold the hand; previously
+ *   discarded after use, now returned so callers (e.g. the turn-timer and
+ *   the `/state`, `/actions` routes) don't need a second, separate
+ *   `rules_config` read for the same row.
  */
 export async function getCurrentHandState(
   db: Client,
   gameId: string,
-): Promise<{ state: GameState; handNumber: number; lastSeq: number } | null> {
+): Promise<
+  | {
+      state: GameState;
+      handNumber: number;
+      lastSeq: number;
+      windowOpenedAt: number;
+      lastActionAt: number;
+      rules: RulesConfig;
+    }
+  | null
+> {
   const maxHandRow = await db.execute({
     sql: 'SELECT MAX(hand_number) AS max_hand FROM actions WHERE game_id = ?',
     args: [gameId],
@@ -151,9 +224,9 @@ export async function getCurrentHandState(
   const rules = normalizeRules(JSON.parse(String(gameRow.rows[0].rules_config)) as Partial<RulesConfig>);
 
   const rows = await listActionsForHand(db, gameId, handNumber);
-  const state = foldActionRows(gameId, handNumber, rows, rules);
-  const lastSeq = rows[rows.length - 1].seq;
-  return { state, handNumber, lastSeq };
+  const { state, windowOpenedAt } = foldActionRows(gameId, handNumber, rows, rules);
+  const lastRow = rows[rows.length - 1];
+  return { state, handNumber, lastSeq: lastRow.seq, windowOpenedAt, lastActionAt: lastRow.createdAt, rules };
 }
 
 // --- getMatchSnapshot ----------------------------------------------------------
@@ -195,6 +268,11 @@ export async function getCurrentHandState(
  *
  * Returns null under the same condition as `getCurrentHandState`: zero
  * action rows recorded for this game yet.
+ *
+ * Also additionally returns, the same way `getCurrentHandState` now does:
+ * `windowOpenedAt` (for the LAST/currently-active hand only — see
+ * `foldActionRows`), `lastActionAt` (the very last row's `createdAt` across
+ * the whole game), and `rules` (already parsed here; previously discarded).
  */
 export async function getMatchSnapshot(
   db: Client,
@@ -205,6 +283,9 @@ export async function getMatchSnapshot(
   lastSeq: number;
   matchPoints: SeatTotals;
   prevailingWind: PrevailingWind;
+  windowOpenedAt: number;
+  lastActionAt: number;
+  rules: RulesConfig;
 } | null> {
   const rows = await listActionsForGame(db, gameId);
   if (rows.length === 0) {
@@ -238,6 +319,7 @@ export async function getMatchSnapshot(
   let lastState: GameState | null = null;
   let lastHandNumber: number | null = null;
   let lastPrevailingWind: PrevailingWind | null = null;
+  let lastWindowOpenedAt: number | null = null;
 
   for (const handNumber of handNumbers) {
     const handRows = rowsByHand.get(handNumber);
@@ -245,9 +327,10 @@ export async function getMatchSnapshot(
       // Unreachable: handNumbers is derived from rowsByHand's own keys.
       throw new Error(`getMatchSnapshot: internal error grouping rows for game ${gameId} hand ${handNumber}`);
     }
-    const state = foldActionRows(gameId, handNumber, handRows, rules);
+    const { state, windowOpenedAt } = foldActionRows(gameId, handNumber, handRows, rules);
     lastState = state;
     lastHandNumber = handNumber;
+    lastWindowOpenedAt = windowOpenedAt;
     lastPrevailingWind = (handRows[0].payload as StartHandPayload).prevailingWind;
 
     if (state.phase.type === 'hand-over' && state.phase.result.kind === 'win') {
@@ -255,14 +338,23 @@ export async function getMatchSnapshot(
     }
   }
 
-  if (lastState === null || lastHandNumber === null || lastPrevailingWind === null) {
+  if (lastState === null || lastHandNumber === null || lastPrevailingWind === null || lastWindowOpenedAt === null) {
     // Unreachable: rows.length > 0 guarantees at least one hand group above.
     throw new Error(`getMatchSnapshot: no hands found for game ${gameId} despite a non-empty action log`);
   }
 
-  const lastSeq = rows[rows.length - 1].seq;
+  const lastRow = rows[rows.length - 1];
 
-  return { state: lastState, handNumber: lastHandNumber, lastSeq, matchPoints, prevailingWind: lastPrevailingWind };
+  return {
+    state: lastState,
+    handNumber: lastHandNumber,
+    lastSeq: lastRow.seq,
+    matchPoints,
+    prevailingWind: lastPrevailingWind,
+    windowOpenedAt: lastWindowOpenedAt,
+    lastActionAt: lastRow.createdAt,
+    rules,
+  };
 }
 
 // --- applyAutoPass -------------------------------------------------------------

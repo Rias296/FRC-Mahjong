@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { toast } from 'sonner';
+import { CenterScoreboard } from './center-scoreboard';
 import { DiscardPool } from './discard-pool';
 import { HandOverPanel } from './hand-over-panel';
 import { MatchStandings } from './match-standings';
@@ -10,13 +11,16 @@ import { PlayerRack, type RackSelectionMode } from './player-rack';
 import { StatusStrip } from './status-strip';
 import { ClaimActionBar } from './claim-action-bar';
 import { RobKongPrompt } from './rob-kong-prompt';
-import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
+import { TurnTimerRing } from './turn-timer-ring';
 import { seatPositionFor, type SeatPosition } from '@/lib/table/tile-display';
-import { computeSelectionWindowSignature, deriveInteractions, type ClaimOffer } from '@/lib/table/interactions';
+import {
+  computeSelectionWindowSignature,
+  deriveInteractions,
+  isOpponentTimerSeat,
+  type ClaimOffer,
+} from '@/lib/table/interactions';
 import { submitAction, advanceNextHand } from '@/lib/api-client';
 import { ruleErrorMessage, TABLE_STRINGS } from '@/lib/i18n/table';
-import { actionLabel } from '@/lib/theme/frc';
 import { LOBBY_STRINGS } from '@/lib/i18n/lobby';
 import type { ClientGameView, ClientPlayerView } from '@/lib/protocol';
 import type { ApiError } from '@/lib/api-client';
@@ -37,8 +41,6 @@ const QUADRANT_POSITION_CLASSES: Readonly<Record<SeatPosition, string>> = {
   top: 'col-start-2 row-start-1 self-start justify-self-center',
   left: 'col-start-1 row-start-2 self-center justify-self-end',
 };
-
-const TOUCH_TARGET_CLASS = 'h-11 min-w-11 px-4 text-base';
 
 function genericActionErrorMessage(kind: ApiError['kind']): string {
   switch (kind) {
@@ -92,6 +94,33 @@ export function GameTable({ view, connected, code, playerToken, onViewUpdate, on
       : null;
 
   const interactions = deriveInteractions(view);
+
+  // Server-authoritative turn-timer display (Round 2 added the fields to
+  // ClientGameView; this round is pure display, see turn-timer-ring.tsx's
+  // doc comment — never a client-side enforcement/auto-action trigger).
+  const turnDeadline = view.turnDeadline ?? null;
+  const turnTimerSeconds = view.turnTimerSeconds ?? null;
+  // serverNow is populated by the server on every response that also sets
+  // turnDeadline (see server/views.ts's `timing` argument) — no client-clock
+  // fallback here (that would defeat the whole point of a server-anchored
+  // countdown; see timer-display.ts's doc comment), so the ring simply
+  // doesn't render on the rare shape that's missing it.
+  const timerRing = turnDeadline !== null && view.serverNow !== undefined && (
+    <TurnTimerRing turnDeadline={turnDeadline} serverNow={view.serverNow} turnTimerSeconds={turnTimerSeconds} />
+  );
+  // True whenever the viewer is themselves part of the currently-open
+  // decision window (their own draw/discard turn, or a claim/rob-kong
+  // window they're a participant in) — exactly the set of windows already
+  // rendered in the rack-relative wrapper below (actionCluster/robPrompt).
+  const viewerHasOpenWindow =
+    interactions.canDraw || interactions.canDiscard || interactions.claimBar !== null || interactions.robPrompt !== null;
+  // Only shown on OpponentPanel(s), and only when the window isn't already
+  // covered by the rack-anchored ring below (see deriveInteractions' doc
+  // comment — at most one of these two locations is ever "the" window for a
+  // given viewer at a time). Which specific seat(s) get it is phase-aware
+  // (see interactions.ts's isOpponentTimerSeat doc comment — currentTurnSeat
+  // alone is wrong during awaiting-claims, a real bug found in review).
+  const showOpponentTimer = turnDeadline !== null && !viewerHasOpenWindow;
 
   async function submit(action: GameAction): Promise<void> {
     setPending(true);
@@ -202,157 +231,127 @@ export function GameTable({ view, connected, code, playerToken, onViewUpdate, on
         player={player}
         isCurrentTurn={view.currentTurnSeat === player.seat}
         isDealer={view.dealerSeat === player.seat}
+        timer={showOpponentTimer && isOpponentTimerSeat(view, player.seat) ? timerRing : undefined}
       />
     );
   }
 
   const viewerSeat = view.viewerSeat;
 
-  const ownTurnControls =
-    viewerSeat !== null && (interactions.canDraw || interactions.ownTurnDeclarations.length > 0) ? (
-      <div className="flex flex-wrap items-center justify-center gap-2">
-        {interactions.canDraw && (
-          <Button size="sm" disabled={pending} onClick={() => void submit({ type: 'draw', seat: viewerSeat })}>
-            {actionLabel('draw')}
-          </Button>
-        )}
-        {interactions.ownTurnDeclarations.includes('hu') && (
-          <Button
-            size="sm"
-            disabled={pending}
-            onClick={() => void submit({ type: 'declare-hu', seat: viewerSeat })}
-            className="bg-accent text-accent-foreground hover:bg-accent/90"
-          >
-            {actionLabel('hu')}
-          </Button>
-        )}
-        {interactions.ownTurnDeclarations.includes('added-kong') && (
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={pending}
-            onClick={() => {
-              setSelectionMode('added-kong-select');
-              setSelectedTileIds([]);
-            }}
-          >
-            {TABLE_STRINGS.addedKongButton}
-          </Button>
-        )}
-        {interactions.ownTurnDeclarations.includes('concealed-kong') && (
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={pending}
-            onClick={() => {
-              setSelectionMode('concealed-kong-select');
-              setSelectedTileIds([]);
-            }}
-          >
-            {TABLE_STRINGS.concealedKongButton}
-          </Button>
-        )}
-      </div>
-    ) : null;
+  // Single floating action cluster: claim offers on another player's
+  // discard, own-turn declarations (draw/hu/added-kong/concealed-kong —
+  // previously game-table.tsx's static `ownTurnControls` block), and the
+  // chow-select/kong-select prompts, all anchored at the same point above
+  // the local rack row. See claim-action-bar.tsx's doc comment.
+  const actionCluster = (
+    <ClaimActionBar
+      offer={interactions.claimBar?.offer ?? []}
+      canDraw={interactions.canDraw}
+      ownTurnDeclarations={interactions.ownTurnDeclarations}
+      selectionMode={selectionMode}
+      selectedTileCount={selectedTileIds.length}
+      pending={pending}
+      onClaimAction={handleClaimAction}
+      onDraw={() => {
+        if (viewerSeat !== null) void submit({ type: 'draw', seat: viewerSeat });
+      }}
+      onDeclareHu={() => {
+        if (viewerSeat !== null) void submit({ type: 'declare-hu', seat: viewerSeat });
+      }}
+      onStartAddedKongSelect={() => {
+        setSelectionMode('added-kong-select');
+        setSelectedTileIds([]);
+      }}
+      onStartConcealedKongSelect={() => {
+        setSelectionMode('concealed-kong-select');
+        setSelectedTileIds([]);
+      }}
+      onConfirmChow={handleConfirmChow}
+      onCancelSelection={handleCancelSelection}
+    />
+  );
 
-  const selectionPrompt =
-    selectionMode === 'chow-select' ? (
-      <p className="text-xs text-muted-foreground">{TABLE_STRINGS.chowSelectPrompt}</p>
-    ) : selectionMode === 'added-kong-select' ? (
-      <div className="flex flex-col items-center gap-1">
-        <p className="text-xs text-muted-foreground">{TABLE_STRINGS.addedKongSelectPrompt}</p>
-        <Button variant="outline" size="sm" disabled={pending} onClick={handleCancelSelection}>
-          {TABLE_STRINGS.selectionCancelButton}
-        </Button>
-      </div>
-    ) : selectionMode === 'concealed-kong-select' ? (
-      <div className="flex flex-col items-center gap-1">
-        <p className="text-xs text-muted-foreground">{TABLE_STRINGS.concealedKongSelectPrompt}</p>
-        <Button variant="outline" size="sm" disabled={pending} onClick={handleCancelSelection}>
-          {TABLE_STRINGS.selectionCancelButton}
-        </Button>
-      </div>
-    ) : null;
+  // RobKongPrompt is rendered in this same relative wrapper (not as a
+  // game-table-level sibling) so it can anchor above the rack on md+
+  // instead of covering it — see rob-kong-prompt.tsx's doc comment.
+  // interactions.robPrompt is only ever non-null when viewerSeat is set
+  // (deriveInteractions returns ZERO_INTERACTIONS for a null viewerSeat),
+  // i.e. exactly when this wrapper renders at all.
+  const robPrompt = interactions.robPrompt !== null && (
+    <RobKongPrompt
+      state={interactions.robPrompt}
+      kongTileVisible={view.phase?.kongTileVisible ?? null}
+      stillWaitingCount={view.phase?.stillWaitingCount}
+      onRob={() => {
+        if (viewerSeat !== null) void submit({ type: 'declare-rob', seat: viewerSeat });
+      }}
+      onPass={() => {
+        if (viewerSeat !== null) void submit({ type: 'pass', seat: viewerSeat });
+      }}
+      pending={pending}
+    />
+  );
 
   const rack = viewerPlayer !== null && (
-    <div className="flex flex-col items-center gap-2">
-      {ownTurnControls}
-      {selectionPrompt}
-      <PlayerRack
-        player={viewerPlayer}
-        drawnTile={drawnTileForViewer}
-        canDiscard={interactions.canDiscard}
-        onDiscard={(tileId) => {
-          if (viewerSeat !== null) void submit({ type: 'discard', seat: viewerSeat, tileId });
-        }}
-        selectionMode={selectionMode}
-        selectedTileIds={selectedTileIds}
-        onToggleTileSelection={handleToggleTileSelection}
-        pending={pending}
-      />
+    <div className="relative flex flex-col items-center gap-2">
+      {actionCluster}
+      {robPrompt}
+      <div className="flex items-end gap-2">
+        {/*
+          Rendered here (chrome beside the rack, not over any tile) whenever
+          the viewer is themselves part of the open window — see
+          viewerHasOpenWindow's doc comment above.
+        */}
+        {viewerHasOpenWindow && timerRing}
+        <PlayerRack
+          player={viewerPlayer}
+          drawnTile={drawnTileForViewer}
+          canDiscard={interactions.canDiscard}
+          onDiscard={(tileId) => {
+            if (viewerSeat !== null) void submit({ type: 'discard', seat: viewerSeat, tileId });
+          }}
+          selectionMode={selectionMode}
+          selectedTileIds={selectedTileIds}
+          onToggleTileSelection={handleToggleTileSelection}
+          pending={pending}
+        />
+      </div>
     </div>
   );
 
   return (
-    <div className="relative flex w-full flex-1 flex-col gap-3 overflow-x-hidden p-2 sm:p-4">
+    <div className="relative flex w-full flex-1 flex-col gap-3 overflow-x-hidden p-2 sm:p-4 md:h-dvh md:max-h-dvh md:grid md:grid-rows-[auto_minmax(0,1fr)_auto] md:gap-2 md:overflow-hidden">
       <StatusStrip view={view} connected={connected} />
 
-      {/* Tablet+: classic 4-seat cross layout around a center discard pool. */}
-      <div className="hidden flex-1 grid-cols-3 grid-rows-3 items-center justify-items-center gap-2 md:grid">
+      {/*
+        Tablet+: classic 4-seat cross layout around a center discard pool +
+        scoreboard. This is the middle row of the outer 3-row grid
+        (status strip / table grid / rack+cluster) — it keeps its own
+        minmax(0,1fr) row tracks (via grid-rows-3) and overflow-hidden so it
+        can never push the rack row below the fold.
+      */}
+      <div className="hidden min-h-0 grid-cols-3 grid-rows-3 items-center justify-items-center gap-2 overflow-hidden md:grid">
         {opponentSeats.map((player) => (
           <div key={player.seat} className={QUADRANT_POSITION_CLASSES[seatPositionFor(player.seat, referenceSeat)]}>
             {opponentFor(player)}
           </div>
         ))}
-        <div className="col-start-2 row-start-2 flex h-full w-full items-center justify-center">
+        <div className="col-start-2 row-start-2 flex h-full w-full min-h-0 items-center justify-center gap-3 overflow-hidden">
+          <CenterScoreboard view={view} />
           <DiscardPool view={view} />
         </div>
-        {viewerPlayer !== null && <div className="col-start-2 row-start-3 flex items-end justify-center self-end">{rack}</div>}
       </div>
 
-      {/* Mobile: stacked vertical layout, no horizontal scroll. */}
+      {/* Mobile: stacked vertical layout, no horizontal scroll (unchanged this round). */}
       <div className="flex flex-1 flex-col gap-3 md:hidden">
         <div className="flex flex-col gap-2">{opponentSeats.map((player) => opponentFor(player))}</div>
+        <CenterScoreboard view={view} />
         <DiscardPool view={view} />
         {viewerPlayer !== null && <div className="mt-auto flex justify-center pb-2">{rack}</div>}
       </div>
 
-      {interactions.claimBar !== null && selectionMode !== 'chow-select' && (
-        <ClaimActionBar offer={interactions.claimBar.offer} pending={pending} onAction={handleClaimAction} />
-      )}
-
-      {selectionMode === 'chow-select' && (
-        <div className="panel fixed right-4 bottom-4 left-4 z-30 flex flex-col items-center gap-2 rounded-xl p-3 shadow-lg sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2">
-          <p className="text-xs text-muted-foreground">{TABLE_STRINGS.chowSelectPrompt}</p>
-          <div className="flex items-center gap-2">
-            <Button
-              disabled={pending || selectedTileIds.length !== 2}
-              onClick={handleConfirmChow}
-              className={cn(TOUCH_TARGET_CLASS, 'bg-accent text-accent-foreground hover:bg-accent/90')}
-            >
-              {TABLE_STRINGS.chowSelectConfirm}
-            </Button>
-            <Button variant="outline" disabled={pending} onClick={handleCancelSelection} className={TOUCH_TARGET_CLASS}>
-              {TABLE_STRINGS.selectionCancelButton}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {interactions.robPrompt !== null && (
-        <RobKongPrompt
-          state={interactions.robPrompt}
-          kongTileVisible={view.phase?.kongTileVisible ?? null}
-          stillWaitingCount={view.phase?.stillWaitingCount}
-          onRob={() => {
-            if (viewerSeat !== null) void submit({ type: 'declare-rob', seat: viewerSeat });
-          }}
-          onPass={() => {
-            if (viewerSeat !== null) void submit({ type: 'pass', seat: viewerSeat });
-          }}
-          pending={pending}
-        />
-      )}
+      {/* md+: bottom row of the outer 3-row grid — rack + floating action cluster. */}
+      {viewerPlayer !== null && <div className="hidden md:flex md:items-end md:justify-center">{rack}</div>}
 
       {view.phase?.type === 'hand-over' && view.phase.result !== undefined && (
         <HandOverPanel

@@ -150,6 +150,21 @@ describe('POST /api/games/[code]/next-hand', () => {
     for (const player of view.players) {
       expect(player.matchPoints).toBe(DEFAULT_RULES.points.startingPoints);
     }
+
+    // Regression guard for a real bug found in review: this route's response
+    // must carry turnTimerSeconds/serverNow (and turnDeadline whenever a
+    // window is actually open), matching GET /state and POST /actions — a
+    // prior version of this route omitted the `timing` argument to
+    // toClientView entirely, silently dropping these fields from every
+    // response immediately following a hand transition. This fixture's high
+    // deadWallReserve makes hand 2 ALSO end immediately in its own
+    // exhaustive draw (see the comment above), landing straight in
+    // hand-over — for which turnDeadline is correctly null (no window is
+    // open); turnTimerSeconds/serverNow are present regardless of phase.
+    expect(view.turnTimerSeconds).toBe(DEFAULT_RULES.turnTimerSeconds);
+    expect(typeof view.serverNow).toBe('number');
+    expect(view.phase?.type).toBe('hand-over');
+    expect(view.turnDeadline).toBeNull();
   });
 
   it("carries a completed win's payment legs forward as matchPoints once advanced to the next hand", async () => {

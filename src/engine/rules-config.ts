@@ -69,6 +69,21 @@ export interface RulesConfig {
     /** 台 — pool-scale points per tai. §11 */
     perTai: number;                           // default 1000
   };
+
+  /**
+   * Server-enforced UX turn timer, in seconds. This is a server/UI concern
+   * only — the engine itself NEVER reads this field (no engine function
+   * takes it as input, and no rule-logic file imports it). It exists purely
+   * so `src/server/turn-timer.ts` can compute a wall-clock deadline for the
+   * currently-open decision window and auto-act (draw/discard/pass) on a
+   * player's behalf once that deadline passes, keeping matches moving.
+   * `<= 0` fully disables enforcement (no deadline is ever computed, no
+   * auto-action is ever appended) — this is also the correct, safe
+   * interpretation for any legacy persisted `rules_config` row that predates
+   * this field, though `normalizeRules`'s existing spread-merge already
+   * back-fills the positive default below for such rows.
+   */
+  turnTimerSeconds: number;                   // default 15
 }
 
 export const DEFAULT_RULES: RulesConfig = Object.freeze({
@@ -85,6 +100,7 @@ export const DEFAULT_RULES: RulesConfig = Object.freeze({
   dealerBaseTai: 1,
   dealerRepeatBonusTaiPerRepeat: 2,
   points: Object.freeze({ startingPoints: 100000, basePoints: 3000, perTai: 1000 }),
+  turnTimerSeconds: 15,
 });
 
 /**
