@@ -41,7 +41,7 @@ export function RobKongPrompt({
   if (state === 'choose') {
     return (
       <div
-        className={cn('panel-plaque flex flex-col items-center gap-3 rounded-xl p-4 shadow-lg', POSITION_CLASS)}
+        className={cn('panel-plaque flex flex-col items-center gap-3 rounded-xl p-4', POSITION_CLASS)}
         role="group"
         aria-label={TABLE_STRINGS.robKongPromptLabel}
       >
@@ -63,7 +63,7 @@ export function RobKongPrompt({
 
   return (
     <div
-      className={cn('panel-plaque flex flex-col items-center gap-2 rounded-xl p-4 shadow-lg', POSITION_CLASS)}
+      className={cn('panel-plaque flex flex-col items-center gap-2 rounded-xl p-4', POSITION_CLASS)}
       role="status"
       aria-live="polite"
     >

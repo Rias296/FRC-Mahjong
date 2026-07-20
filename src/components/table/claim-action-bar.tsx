@@ -73,7 +73,7 @@ export function ClaimActionBar({
     <div className="fixed right-4 bottom-4 left-4 z-30 flex flex-col items-center gap-2 sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2 md:absolute md:right-2 md:bottom-full md:left-auto md:mb-2 md:w-auto md:translate-x-0 md:items-end">
       {showClaimButtons && (
         <div
-          className="panel-plaque flex flex-wrap items-center justify-center gap-2 rounded-xl p-3 shadow-lg"
+          className="panel-plaque flex flex-wrap items-center justify-center gap-2 rounded-xl p-3"
           role="group"
           aria-label={TABLE_STRINGS.claimActionsLabel}
         >
@@ -121,7 +121,7 @@ export function ClaimActionBar({
 
       {showOwnTurnButtons && (
         <div
-          className="panel-plaque flex flex-wrap items-center justify-center gap-2 rounded-xl p-3 shadow-lg"
+          className="panel-plaque flex flex-wrap items-center justify-center gap-2 rounded-xl p-3"
           role="group"
           aria-label={TABLE_STRINGS.turnActionsLabel}
         >
@@ -159,7 +159,7 @@ export function ClaimActionBar({
       )}
 
       {showChowConfirm && (
-        <div className="panel-plaque flex flex-col items-center gap-2 rounded-xl p-3 shadow-lg">
+        <div className="panel-plaque flex flex-col items-center gap-2 rounded-xl p-3">
           <p className="text-xs text-muted-foreground">{TABLE_STRINGS.chowSelectPrompt}</p>
           <div className="flex items-center gap-2">
             <Button
@@ -177,7 +177,7 @@ export function ClaimActionBar({
       )}
 
       {(showAddedKongPrompt || showConcealedKongPrompt) && (
-        <div className="panel-plaque flex flex-col items-center gap-1 rounded-xl p-3 shadow-lg">
+        <div className="panel-plaque flex flex-col items-center gap-1 rounded-xl p-3">
           <p className="text-xs text-muted-foreground">
             {showAddedKongPrompt ? TABLE_STRINGS.addedKongSelectPrompt : TABLE_STRINGS.concealedKongSelectPrompt}
           </p>

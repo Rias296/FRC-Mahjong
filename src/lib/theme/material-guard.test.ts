@@ -277,4 +277,157 @@ describe('material guard (round 2): win screens framed', () => {
     expect(source).toContain('animate-buzzer-edge-flash');
     expect(source).toContain('animate-buzzer-pulse');
   });
+
+  it("animate-buzzer-edge-flash lands on the outer backdrop div, NOT on OrnateFrame's element — they must not share an element, since frame-wood's composed box-shadow and the keyframe's raw box-shadow literal would otherwise fight for the duration of the animation even though both are individually safe at rest", () => {
+    const source = readTableComponent('hand-over-panel.tsx');
+    // The outer `fixed inset-0` wrapper (which conditionally carries
+    // animate-buzzer-edge-flash) must close before `<OrnateFrame` opens —
+    // i.e. OrnateFrame is a child, not the same element.
+    const outerDivMatch = /<div\s+className=\{cn\(\s*'fixed inset-0[^}]*animate-buzzer-edge-flash[\s\S]*?\)\}\s*>/.exec(source);
+    expect(outerDivMatch, 'expected the fixed inset-0 backdrop div conditionally carrying animate-buzzer-edge-flash').not.toBeNull();
+    const outerDivEnd = outerDivMatch !== null ? (outerDivMatch.index ?? 0) + outerDivMatch[0].length : -1;
+    const ornateFrameIndex = source.indexOf('<OrnateFrame');
+    expect(ornateFrameIndex, 'expected <OrnateFrame to appear after the backdrop div opens').toBeGreaterThan(-1);
+    expect(ornateFrameIndex, '<OrnateFrame must be a descendant opened AFTER the backdrop div tag closes, not the same element').toBeGreaterThan(outerDivEnd);
+  });
+});
+
+describe('material guard (round 2): claim-action-bar.tsx / rob-kong-prompt.tsx exact positioning strings (byte-for-byte)', () => {
+  // The substring-based tests above ("still contains the Phase 1 anchor
+  // tokens") would pass even if an unchecked token elsewhere in the same
+  // className (e.g. `md:items-end`, `sm:w-auto`, `gap-2`) were silently
+  // dropped or altered. Pin the FULL literal instead so any deviation, not
+  // just the substrings those tests happen to check, fails loudly.
+  const CLUSTER_WRAPPER_CLASS =
+    'fixed right-4 bottom-4 left-4 z-30 flex flex-col items-center gap-2 sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2 md:absolute md:right-2 md:bottom-full md:left-auto md:mb-2 md:w-auto md:translate-x-0 md:items-end';
+  const ROB_POSITION_CLASS =
+    'fixed right-4 bottom-4 left-4 z-30 sm:right-auto sm:left-1/2 sm:w-auto sm:-translate-x-1/2 md:absolute md:right-2 md:bottom-full md:left-auto md:mb-2 md:w-auto md:translate-x-0';
+
+  it('claim-action-bar.tsx cluster wrapper className is exactly the Phase 1 literal', () => {
+    const source = readTableComponent('claim-action-bar.tsx');
+    expect(source).toContain(`className="${CLUSTER_WRAPPER_CLASS}"`);
+  });
+
+  it("rob-kong-prompt.tsx's POSITION_CLASS constant is exactly the Phase 1 literal", () => {
+    const source = readTableComponent('rob-kong-prompt.tsx');
+    expect(source).toContain(`const POSITION_CLASS =\n  '${ROB_POSITION_CLASS}';`);
+  });
+});
+
+describe('material guard (round 2): TOUCH_TARGET_CLASS exact literal (byte-for-byte)', () => {
+  // The existing round-2 test only checks the PREFIX ("h-11 min-w-11"),
+  // which would still pass if `px-4 text-base` were silently changed to
+  // e.g. `px-2 text-sm` (a real touch-target regression on the padding/font
+  // side). Pin the full literal.
+  it('claim-action-bar.tsx and rob-kong-prompt.tsx declare the exact same TOUCH_TARGET_CLASS literal', () => {
+    for (const file of ['claim-action-bar.tsx', 'rob-kong-prompt.tsx']) {
+      const source = readTableComponent(file);
+      expect(source, `${file} TOUCH_TARGET_CLASS literal changed`).toContain(
+        "const TOUCH_TARGET_CLASS = 'h-11 min-w-11 px-4 text-base';",
+      );
+    }
+  });
+});
+
+describe('material guard (round 2): rob-kong-prompt.tsx — lacquer/pass wired to the correct handlers', () => {
+  it('the "choose" branch applies variant="lacquer" to the Rob button (onRob) and variant="outline" to the Pass button (onPass) — not swapped', () => {
+    const source = readTableComponent('rob-kong-prompt.tsx');
+    expect(source).toMatch(/variant="lacquer"\s+disabled=\{pending\}\s+onClick=\{onRob\}/);
+    expect(source).toMatch(/variant="outline"\s+disabled=\{pending\}\s+onClick=\{onPass\}/);
+  });
+
+  it('kongTileVisible (TileFace) rendering is not wrapped in any ornament/frame class — tile readability rule applies inside dense prompts too', () => {
+    const source = readTableComponent('rob-kong-prompt.tsx');
+    const tileFaceCalls = [...source.matchAll(/<TileFace[^/]*\/>/g)].map((m) => m[0]);
+    expect(tileFaceCalls.length).toBeGreaterThan(0);
+    for (const call of tileFaceCalls) {
+      for (const identifier of ORNAMENT_IDENTIFIERS) {
+        expect(call.includes(identifier), `TileFace call unexpectedly touched by "${identifier}": ${call}`).toBe(false);
+      }
+    }
+  });
+});
+
+describe('material guard (round 2): button.tsx lacquer/gold variants stay legible in the disabled state', () => {
+  it('lacquer keeps text-foreground (not a red-tinted text color that would wash out against the red gradient at disabled:opacity-50)', () => {
+    const source = readFileSync(BUTTON_PATH, 'utf-8');
+    const lacquerBlock = /lacquer:\s*\n?\s*"([^"]*)"/.exec(source)?.[1];
+    expect(lacquerBlock, 'lacquer variant string not found').not.toBeNull();
+    expect(lacquerBlock ?? '').toContain('text-foreground');
+  });
+
+  it('gold uses text-accent against a transparent/low-opacity fill (not text-foreground, which would be low-contrast on the near-transparent gold background)', () => {
+    const source = readFileSync(BUTTON_PATH, 'utf-8');
+    const goldBlock = /gold:\s*"([^"]*)"/.exec(source)?.[1];
+    expect(goldBlock, 'gold variant string not found').not.toBeNull();
+    expect(goldBlock ?? '').toContain('text-accent');
+  });
+
+  it('the shared disabled mechanism (disabled:opacity-50) scales the whole button uniformly, so it does not introduce a NEW lacquer/gold-specific contrast regression beyond what every pre-existing variant already accepts', () => {
+    const source = readFileSync(BUTTON_PATH, 'utf-8');
+    const baseClasses = /cva\(\s*"([^"]*)"/.exec(source)?.[1] ?? '';
+    expect(baseClasses).toContain('disabled:opacity-50');
+    // lacquer/gold must not define their own competing disabled override
+    // that would fight with the shared base mechanism.
+    const lacquerBlock = /lacquer:\s*\n?\s*"([^"]*)"/.exec(source)?.[1] ?? '';
+    const goldBlock = /gold:\s*"([^"]*)"/.exec(source)?.[1] ?? '';
+    expect(lacquerBlock).not.toContain('disabled:');
+    expect(goldBlock).not.toContain('disabled:');
+  });
+});
+
+describe('material guard (round 2): match-standings.tsx champion row stays visually distinct after the border sweep', () => {
+  it("standing.place === 1 gets a strictly stronger border than the border-accent/30 baseline every row gets, coupled in the same conditional expression (not just two independently-present strings)", () => {
+    const source = readTableComponent('match-standings.tsx');
+    expect(source).toContain('border-accent/30');
+    expect(source).toMatch(/standing\.place === 1\s*&&\s*'border-accent'/);
+  });
+
+  it('the champion badge chip is also gated on the same place === 1 condition, giving a second independent visual signal beyond just the border', () => {
+    const source = readTableComponent('match-standings.tsx');
+    expect(source).toMatch(/\{standing\.place === 1 && \(/);
+    expect(source).toContain('championLabel');
+  });
+});
+
+describe('material guard: panel-plaque / frame-wood never co-occur with a built-in shadow-* utility in the same className', () => {
+  // Real, build-confirmed regression found in review: claim-action-bar.tsx
+  // and rob-kong-prompt.tsx swapped their old `panel` utility (which never
+  // set box-shadow) for `panel-plaque` (Round 1's --tw-shadow-composing
+  // utility) but kept the pre-existing `shadow-lg` class on the same
+  // element. Tailwind's built-in `.shadow-lg` ALSO sets `--tw-shadow` and
+  // emits the identical 5-variable composed `box-shadow` formula — and
+  // since it's declared AFTER `.panel-plaque` in the same @layer utilities
+  // block, it silently wins the cascade and replaces panel-plaque's
+  // decorative wood-plaque bevel with a generic elevation shadow on every
+  // claim/rob panel. This is the SAME clobbering mechanism the
+  // "frame-wood box-shadow does not silently clobber ring-*" test above
+  // guards for the OrnateFrame/ring-2 case — this test guards the
+  // panel-plaque/shadow-* case, and scans the whole directory (not a
+  // hand-picked file list) so a future adopter can't reintroduce it
+  // unnoticed.
+  const SHADOW_UTILITY_PATTERN = /\bshadow-(?:sm|md|lg|xl|2xl|none)\b/;
+
+  it('no file under src/components/table applies panel-plaque or frame-wood together with a shadow-sm/md/lg/xl/2xl/none utility in the same className string', () => {
+    const files = readdirSync(TABLE_COMPONENTS_DIR).filter((name) => name.endsWith('.tsx'));
+    expect(files.length).toBeGreaterThan(0);
+
+    for (const file of files) {
+      const source = readTableComponent(file);
+      // className="..." literals and cn('...', ...) first-argument literals
+      // are both plain double/single-quoted strings in this codebase's
+      // convention — scan every quoted string literal in the file rather
+      // than trying to parse JSX, matching this suite's existing
+      // source-inspection style.
+      const stringLiterals = source.match(/(["'])(?:(?!\1)[^\\]|\\.)*\1/g) ?? [];
+      for (const literal of stringLiterals) {
+        const hasPlaqueOrFrame = literal.includes('panel-plaque') || literal.includes('frame-wood');
+        const hasShadowUtility = SHADOW_UTILITY_PATTERN.test(literal);
+        expect(
+          hasPlaqueOrFrame && hasShadowUtility,
+          `${file}: found panel-plaque/frame-wood co-applied with a built-in shadow-* utility in the same string: ${literal}`,
+        ).toBe(false);
+      }
+    }
+  });
 });
